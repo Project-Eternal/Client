@@ -2,18 +2,6 @@
 
 A project to [statically recompile](https://en.wikipedia.org/wiki/Binary_translation "Static binary translation") DOS and Windows game executables to create Windows (x86/x64) or Linux (x86/x64/arm/arm64/riscv64) or MacOS (x64/arm64) versions of the games.
 
-Following DOS games are supported:
-
-* [Albion](https://en.wikipedia.org/wiki/Albion_\(video_game\) "Albion")
-* [X-Com: UFO Defense (UFO: Enemy Unknown)](https://en.wikipedia.org/wiki/UFO:_Enemy_Unknown "X-Com: UFO Defense (UFO: Enemy Unknown)")
-* [X-Com: Terror from the Deep](https://en.wikipedia.org/wiki/X-COM:_Terror_from_the_Deep "X-Com: Terror from the Deep")
-* [Warcraft: Orcs & Humans](https://en.wikipedia.org/wiki/Warcraft:_Orcs_%26_Humans "Warcraft: Orcs & Humans")
-
-Following Windows games are supported:
-
-* [Septerra Core: Legacy of the Creator](https://en.wikipedia.org/wiki/Septerra_Core "Septerra Core: Legacy of the Creator")
-* [Battle Isle 3: Shadow of the Emperor (Battle Isle 2220: Shadow of the Emperor)](https://en.wikipedia.org/wiki/Battle_Isle_2220 "Battle Isle 3: Shadow of the Emperor (Battle Isle 2220: Shadow of the Emperor)")
-
 The source code is released with MIT license (except libraries, etc. by other people, which have their own license).
 For the purpose of using the code in GPL projects, the source code is also released with GPLv2 or later and LGPLv2.1 or later.
 
