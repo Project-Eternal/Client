@@ -1,0 +1,346 @@
+import json
+import os
+import sys
+import shutil
+import subprocess
+import filecmp
+import hashlib
+
+# World of Warcraft for the web: WoW.exe is recompiled by SRW into llasm, split into modules, compiled to WebAssembly
+# and linked with the runtime (SRW-web/), the game's own C files (WoW-*.c) and the web shell in web/.
+#
+#   scons -j3
+#
+# needs: emsdk (emcc), llasm, opt and llc (LLVM), gcc (for SRW), python with capstone and pefile.
+
+SConscriptChdir(0)
+
+vars = Variables('custom.py')
+vars.Add(EnumVariable('debug', 'Debug level (0 = release version)', '0',
+                                 allowed_values=('0', '1', '2'),
+                                 ignorecase=2))
+vars.Add(EnumVariable('device', 'Target device (only the web is supported)', 'web',
+                                 allowed_values=('web',),
+                                 ignorecase=2))
+vars.Add(BoolVariable('printprocs', 'Also print every procedure as it is entered (needs traceprocs; very verbose)', False))
+vars.Add(BoolVariable('diagnostics', 'The debug flavor: all debug logging (srw_debuglog.h: perf, d3d, watchdog, memory, files, threads, modules, net, input, client, imports; off at the start, switched with the chat command .log) and the debugging commands (.log, .gfx), the watchdog thread, scripted input (/autoinput.txt)', False))
+vars.Add(BoolVariable('stress', 'The race test build: random pauses at the imports and the runtime\'s locks (/stress.txt "PERMILLE MAXUS"); implies diagnostics and goes to stress/, never to publish/', False))
+vars.Add(BoolVariable('tailcalls', 'WebAssembly tail calls between the recompiled procedures (Chrome 112+, Firefox 121+, Safari 18.2+); 0: every call and return goes through a dispatcher loop', True))
+vars.Add('inline', 'the inline threshold of opt for the recompiled code (LLVM -O3 default 225; -1: that default).', '50')
+vars.Add(BoolVariable('release', 'A release build: after the link Binaryen\'s wasm-opt -O2 runs on the wasm (slow and memory hungry: not for development builds). It is only done when the program is linked: touch a source file or delete publish/WoW.html to force it', False))
+vars.Add(BoolVariable('server', 'Also build the embedded AzerothCore server module (server/acore/wasm/build-server.sh: dependencies, the SQLite shim, AzerothCore; incremental, hours the first time) into publish/server/acore/, and its data/ and init/ (server/acore/wasm/pack-assets.py: the databases from AzerothCore\'s SQL, when it changed)', False))
+vars.Add('game', 'The game installation (the folder with the executable at its top and the archives in Data/): the program is recompiled from its WoW.exe and the page\'s images, the login list, the pixel shaders and the like are made from its archives, in the game\'s order (tools/game_install.py). The build stops when it is missing', 'data')
+vars.Add('locale', 'The language of the installation (enGB): by default the locale of its WTF/Config.wtf, or its only language folder in Data/', '')
+vars.Add(BoolVariable('dbcpack', 'With server=1: also pack the game\'s DBC tables into the server\'s data (pack-assets.py --dbc-pack), for a page whose server cannot ask the running game for them; they are extracted by the build (scons dbc)', False))
+vars.Add(BoolVariable('traceprocs', 'Record the address of every recompiled procedure the program enters (slow, for debugging)', False))
+vars.Add(BoolVariable('trace', 'Log the name of every imported function the program calls', False))
+env = Environment(variables = vars)
+Help(vars.GenerateHelpText(env))
+
+debug = int(env['debug'])
+inline_threshold = int(env['inline'])
+device = env['device']
+trace = env['trace']
+traceprocs = env['traceprocs']
+clean = env.GetOption('clean')
+program_name = 'WoW'
+
+# number of code modules the recompiled program is split into (recompile.py must agree)
+CODE_CHUNKS = 16
+
+web_dir = os.path.abspath('../../../SRW-web')
+
+# the game installation: every file of the game the port uses is read from it by the build, never committed
+sys.path.insert(0, 'tools')
+import game_install
+installation = None
+if not clean and not env.GetOption('help'):
+    try:
+        installation = game_install.open_installation(env['game'], env['locale'] or None)
+    except game_install.GameError as e:
+        print('\nError: %s\n' % e)
+        Exit(1)
+client_exe = installation.exe if installation else os.path.join(env['game'], 'WoW.exe')
+game_out = os.path.join('build', 'game')   # what the build makes from the installation (git-ignored with build/)
+
+# ---------------------------------------------------------------------------------------------------------------------
+# compiler settings
+
+env['CC'] = 'emcc'
+env['CXX'] = 'em++'
+env['LINK'] = 'em++'
+env['ENV'] = dict(os.environ)
+
+env.Append(CCFLAGS = '-O2 -Wall')
+if env['stress']:
+    env['diagnostics'] = True
+    env.Append(CCFLAGS = '-DSRW_STRESS')
+if env['diagnostics']:
+    env.Append(CCFLAGS = '-DSRW_DIAGNOSTICS')
+if ARGUMENTS.get('audiotest'):
+    env.Append(CCFLAGS = '-DWOW_AUDIO_SELFTEST')
+if ARGUMENTS.get('sandboxtest'):
+    env.Append(CCFLAGS = '-DWOW_SANDBOX_SELFTEST')
+if ARGUMENTS.get('tracefiles'):
+    env.Append(CCFLAGS = '-DSRW_TRACE_FILES')
+if ARGUMENTS.get('watchmem'):
+    env.Append(CCFLAGS = '-DSRW_WATCH_MEMORY=' + ARGUMENTS['watchmem'])
+if ARGUMENTS.get('watchderef'):
+    env.Append(CCFLAGS = '-DSRW_WATCH_DEREF=' + ARGUMENTS['watchderef'])
+if ARGUMENTS.get('heartbeat'):
+    env.Append(CCFLAGS = '-DSRW_HEARTBEAT=1')
+if ARGUMENTS.get('watchentry'):
+    env.Append(CCFLAGS = '-DSRW_WATCH_ENTRY=' + ARGUMENTS['watchentry'])
+if env['printprocs']:
+    env.Append(CCFLAGS = '-DSRW_PRINT_PROCS')
+if ARGUMENTS.get('printafter'):
+    # printafter=ADDRESS,COUNT: procedures are printed only once ADDRESS has been entered COUNT times
+    env.Append(CCFLAGS = '-DSRW_PRINT_AFTER_ADDRESS=%s -DSRW_PRINT_AFTER_COUNT=%s' % tuple(ARGUMENTS['printafter'].split(',')))
+if debug == 1:
+    env.Append(CCFLAGS = '-g')
+elif debug > 1:
+    env.Append(CCFLAGS = '-g -D__DEBUG__')
+
+env.Append(CCFLAGS   = '-m32 -DUSE_SDL2 -sUSE_SDL=2 -sUSE_ZLIB=1 -pthread -sUSE_PTHREADS=1',
+           CPPPATH   = ['.'],
+           LINKFLAGS = '-sUSE_SDL=2 -sUSE_ZLIB=1 -sCASE_INSENSITIVE_FS=1 -lidbfs.js '
+                       '--pre-js web/program.js --pre-js ' + os.path.join(web_dir, 'web', 'runtime.js') + ' --pre-js web/prerun.js --shell-file web/shell.html '
+                       '-m32 -pthread -sUSE_PTHREADS=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=536870912 -sMAXIMUM_MEMORY=2147483648 '
+                       '-sDYNAMIC_EXECUTION=0 -sEXIT_RUNTIME=0 -sPTHREAD_POOL_SIZE=0 -sALLOW_BLOCKING_ON_MAIN_THREAD=0 '
+                       '-sEXPORTED_RUNTIME_METHODS=["ccall","cwrap","FS","callMain"] --profiling-funcs '
+                       '-sGLOBAL_BASE=4190208 -sUSE_WEBGL2=1 -sFULL_ES3=1 -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREEN_FRAMEBUFFER=1',
+# (GLOBAL_BASE is one page below the address of the image: the linker adds a page)
+           LIBS      = ['pthread', 'dl'])
+if env['tailcalls']:
+    env.Append(LINKFLAGS = ' -mtail-call')
+
+def sync_tree(src_paths, dst_path):
+    # copies updated files and removes unneeded files; src_paths may be a list of layers laid over each other (folders merge, a file of a later layer wins)
+    if isinstance(src_paths, str):
+        src_paths = [src_paths]
+    src_paths = [p for p in src_paths if os.path.exists(p)]
+    if os.path.isdir(src_paths[-1]):
+        src_dirs = [p for p in src_paths if os.path.isdir(p)]
+        os.makedirs(dst_path, exist_ok=True)
+        src_entries = set(e for p in src_dirs for e in os.listdir(p) if not e.startswith('.') and not e.endswith('.md'))   # (dot entries are tool state and Markdown files documentation: never deployed)
+        for entry in os.listdir(dst_path):
+            if entry not in src_entries and entry != 'manifest.txt':   # (the manifests of the remote file systems are made in place)
+                entry_path = os.path.join(dst_path, entry)
+                if os.path.isdir(entry_path):
+                    shutil.rmtree(entry_path)
+                else:
+                    os.remove(entry_path)
+        for entry in src_entries:
+            sync_tree([os.path.join(p, entry) for p in src_dirs], os.path.join(dst_path, entry))
+    else:
+        src_path = src_paths[-1]
+        if (not os.path.exists(dst_path)) or (os.path.getmtime(src_path) > os.path.getmtime(dst_path)) or (os.path.getsize(src_path) != os.path.getsize(dst_path)):
+            shutil.copy2(src_path, dst_path)
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the steps that make files from the game installation. Two of them run now, while this file is read, because their results are copied into publish/ below;
+# each decides by itself whether it has anything to do. A step depends on the names, sizes and times of the archives (installation.stamp()), never on their
+# content.
+
+def file_digest(names):
+    digest = hashlib.sha1()
+    for name in names:
+        with open(name, 'rb') as f:
+            digest.update(f.read())
+    return digest.hexdigest()
+
+# the code of the steps: a change of it makes the step run again
+game_tool_files = [os.path.join('tools', n) for n in ('game_install.py', 'mpq.py')]
+
+def game_step_stamp(tool_files):
+    return installation.stamp() + '\n' + file_digest(game_tool_files + tool_files)
+
+def make_login_list():
+    # the game's GlueXML.toc with the line that loads the port's login script (tools/make_glue_toc.py), laid over the repository's patch/ in publish/patch/
+    if not installation.info['login_list']:
+        return
+    target = os.path.join(game_out, 'patch', 'Data', 'Interface', 'GlueXML', 'GlueXML.toc')
+    stamp_file = os.path.join(game_out, 'stamps', 'login-list.txt')
+    stamp = game_step_stamp([os.path.join('tools', 'make_glue_toc.py')])
+    if os.path.isfile(target) and os.path.isfile(stamp_file) and open(stamp_file).read() == stamp:
+        return
+    print('Making the login list from the game (tools/make_glue_toc.py)')
+    if subprocess.call([sys.executable, os.path.join('tools', 'make_glue_toc.py'), env['game'], target] + ([env['locale']] if env['locale'] else [])) != 0:
+        Exit(1)
+    os.makedirs(os.path.dirname(stamp_file), exist_ok=True)
+    with open(stamp_file, 'w') as f:
+        f.write(stamp)
+
+def make_page_images():
+    # web/resources/Shell*.png: the missing ones only, never overwriting an image that is there (tools/shell_art.py); web/resources/Stream*.png are not made here
+    import shell_art
+    if shell_art.missing_images(os.path.join('web', 'resources')):
+        print('Making the missing images of the page from the game (tools/shell_art.py)')
+        if subprocess.call([sys.executable, os.path.join('tools', 'shell_art.py'), '--game', env['game'], '--out', os.path.join('web', 'resources')] +
+                           (['--locale', env['locale']] if env['locale'] else [])) != 0:
+            Exit(1)
+
+# (a stress build has a directory of its own: it must never be deployed by mistake)
+out_dir = 'stress' if env['stress'] else 'publish'
+web_static_files = ['favicon.ico', 'style.css', 'acore-hub.js', 'acore.js', 'controls.js', 'datasource.js', 'export.js', 'kept.js', 'module.js', 'p2p.js', 'mqtt.min.js', 'settings.js', 'shell.js', 'start.js', 'resources']
+if installation:
+    make_page_images()
+    make_login_list()
+    os.makedirs(out_dir, exist_ok=True)
+    for web_static_name in web_static_files:
+        web_static_src = os.path.join('web', web_static_name)
+        if os.path.exists(web_static_src):   # (a file or a directory)
+            sync_tree(web_static_src, os.path.join(out_dir, web_static_name))
+    # the game version the page is built for (web/export.js refuses an export of the other one), from the version resource of the client executable; the
+    # archives without which the version cannot start (web/datasource.js checks them at the Start; `{locale}` stands for the locale that is set, and the
+    # locale links of Data/<language>/ and Data/_/ count)
+    version_js = os.path.join(out_dir, 'version.js')
+    text = 'var Game_Version = { build: %d, name: "%s", required: %s };\n' % (installation.build, installation.version, json.dumps(installation.info['required']))
+    if not os.path.exists(version_js) or open(version_js).read() != text:
+        with open(version_js, 'w') as f:
+            f.write(text)
+    # the remote file systems next to the page, each with its manifest (tools/make_remote_manifest.py): the client's patch/ (our changes to the game's
+    # files, always win) and init/ (the files a new browser starts with); its data/ is the game's installation, deployed separately (publish/data/
+    # stays empty). The embedded server's in server/acore/: patch/ from the repository, data/ and init/ from server/acore/wasm/pack-assets.py
+    import make_remote_manifest
+    for remote_name in ['patch', 'init']:
+        # (the login list made from the game is laid over the repository's patch/; the manifest is written after both are copied)
+        sync_tree([remote_name, os.path.join(game_out, remote_name)], os.path.join(out_dir, remote_name))
+        make_remote_manifest.manifest(os.path.join(out_dir, remote_name))
+    sync_tree(os.path.join('server', 'acore', 'patch'), os.path.join(out_dir, 'server', 'acore', 'patch'))
+    for remote_name in ['data', 'patch', 'init']:
+        if os.path.isdir(os.path.join(out_dir, 'server', 'acore', remote_name)):
+            make_remote_manifest.manifest(os.path.join(out_dir, 'server', 'acore', remote_name))
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the files made from the game's archives by build commands (the two that go into publish/ are made above). Each depends on the stamp of the archives it
+# reads (names, sizes, times), so a build that changes no input runs no step and reads no archive.
+
+def game_command(targets, tool_script, extra_sources, tool_args, message, stamp_extra=()):
+    stamp = (game_step_stamp([tool_script] + list(stamp_extra)) if installation else '')
+    def run_tool(target, source, env):
+        command = [sys.executable, tool_script, env['game']] + tool_args(target)
+        if env['locale']:
+            command.append(env['locale'])
+        if subprocess.call(command) != 0:
+            raise Exception('%s failed' % tool_script)
+        return 0
+    node = env.Command(targets, [env.Value(stamp), tool_script] + game_tool_files + extra_sources, Action(run_tool, message))
+    env.Precious(node)
+    return node
+
+# the Direct3D layer's table of translated pixel shaders (compiled in; its path is given to the compiler as a definition) and the sound self test's sample
+pixel_shaders_inc = os.path.abspath(os.path.join(game_out, 'ps_shaders.inc'))
+pixel_shaders = game_command(pixel_shaders_inc, os.path.join('tools', 'make_ps_shaders.py'), [],
+                             lambda target: [str(target[0])], 'Translating the pixel shaders of the game ($TARGET)')
+if ARGUMENTS.get('audiotest'):
+    sample_inc = os.path.abspath(os.path.join(game_out, 'sample-mp3.inc'))
+    def run_sample(target, source, env):
+        with open(str(target[0]), 'w') as f:
+            command = [sys.executable, os.path.join('tools', 'audio-test', 'make_sample.py'), env['game']] + ([env['locale']] if env['locale'] else [])
+            if subprocess.call(command, stdout=f) != 0:
+                raise Exception('make_sample.py failed')
+        return 0
+    sample = env.Command(sample_inc, [env.Value(game_step_stamp([os.path.join('tools', 'audio-test', 'make_sample.py')]) if installation else ''),
+                                      os.path.join('tools', 'audio-test', 'make_sample.py')] + game_tool_files, Action(run_sample, 'Writing the sound sample ($TARGET)'))
+    env.Append(CPPDEFINES = [('WOW_AUDIO_SAMPLE_INC', '\\"%s\\"' % sample_inc)])
+
+# the DBC tables the server loads (server=1 dbcpack=1, or `scons dbc` alone): tools/extract_server_dbc.py into build/game/server/dbc/
+dbc_dir = os.path.join(game_out, 'server', 'dbc')
+dbc_list = os.path.join(game_out, 'server', 'dbc.txt')
+acore_dir = os.path.join('server', 'acore', 'azerothcore')
+def run_dbc(target, source, env):
+    command = [sys.executable, os.path.join('tools', 'extract_server_dbc.py'), env['game'], dbc_dir, acore_dir] + ([env['locale']] if env['locale'] else [])
+    if subprocess.call(command) != 0:
+        raise Exception('extract_server_dbc.py failed')
+    with open(str(target[0]), 'w') as f:
+        f.write('\n'.join(sorted(os.listdir(dbc_dir))) + '\n')
+    return 0
+dbc_step = None
+if not clean and (env['dbcpack'] or 'dbc' in COMMAND_LINE_TARGETS):
+    dbc_step = env.Command(dbc_list, [env.Value(game_step_stamp([os.path.join('tools', 'extract_server_dbc.py')]) if installation else ''),
+                                      os.path.join('tools', 'extract_server_dbc.py'), os.path.join(acore_dir, 'src', 'server', 'game', 'DataStores', 'DBCStores.cpp')] + game_tool_files,
+                           Action(run_dbc, 'Extracting the DBC tables of the game'))
+    env.Alias('dbc', dbc_step)
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the runtime for recompiled Windows programs (SRW-web/): the recompilation, the Windows functions, Direct3D 9 on WebGL; then the game's own C files
+
+runtime_params = {'program_name': program_name, 'client_exe': os.path.abspath(client_exe), 'program_dir': 'SRW', 'llasm_dir': 'llasm',
+                  'source_dirs': ['.'], 'import_defs': [os.path.join('SRW', 'imports.def')], 'chunks': CODE_CHUNKS, 'va_map': (0x401000, 0x5de000),
+                  'snapshot_memory': (0x7ff000, 0x1400000),
+                  'shaders_inc': pixel_shaders_inc, 'shaders_node': pixel_shaders, 'trace': trace, 'traceprocs': traceprocs,
+                  'inline': inline_threshold, 'tailcalls': env['tailcalls'],
+                  'defines': []}
+image_obj, runtime_objs, support_objs, llasm_objs, cxx_env = SConscript(os.path.join(web_dir, 'SConscript'), exports={'env': env, 'params': runtime_params})
+
+# the game's own C files
+game_sources = [str(f) for f in Glob('*.c')]
+game_objs = [env.Object(os.path.join('build', os.path.splitext(os.path.basename(s))[0]), s) for s in game_sources]
+if ARGUMENTS.get('audiotest'):
+    env.Depends([o for o in game_objs if os.path.basename(str(o[0])) == 'WoW-fmod.o'], sample)
+game_objs += runtime_objs
+# the movies: FFmpeg's MPEG-4 decoder (built once by tools/build_ffmpeg.sh, which fetches the source)
+ffmpeg_dir = os.path.abspath(os.path.join('third_party', 'ffmpeg', 'build'))
+if not clean and not os.path.isfile(os.path.join(ffmpeg_dir, 'lib', 'libavcodec.a')):
+    print("Building FFmpeg's MPEG-4 decoder (tools/build_ffmpeg.sh)...")
+    subprocess.check_call(['bash', os.path.join('tools', 'build_ffmpeg.sh'), ffmpeg_dir])
+env.Append(CPPPATH = [os.path.join(ffmpeg_dir, 'include')])
+env.Append(LIBPATH = [os.path.join(ffmpeg_dir, 'lib')])
+env.Prepend(LIBS = ['avcodec', 'avutil'])
+# native reading of the archives for the sound system, with the Huffman and ADPCM decompressors of StormLib
+game_objs += [cxx_env.Object(os.path.join('build', 'WoW-mpq'), 'WoW-mpq.cpp'),
+              cxx_env.Object(os.path.join('build', 'stormlib-huff'), os.path.join('third_party', 'stormlib', 'huff.cpp')),
+              cxx_env.Object(os.path.join('build', 'stormlib-adpcm'), os.path.join('third_party', 'stormlib', 'adpcm.cpp'))]
+
+program = env.Program(out_dir + '/' + program_name + '.html', image_obj + game_objs + support_objs + llasm_objs)
+env.Depends(program, ['web/program.js', os.path.join(web_dir, 'web', 'runtime.js'), 'web/prerun.js', 'web/shell.html'])
+
+def run_wasm_opt(target, source, env):
+    # the features the module uses (llasm_sse.c: simd; atomics and threads; the tail calls between the recompiled procedures); -g keeps the
+    # names the profiler and the crash traces use. The output replaces the wasm only when the tool succeeded.
+    wasm = os.path.join(out_dir, program_name + '.wasm')
+    optimized = wasm + '.opt'
+    tool = os.path.join(os.path.dirname(shutil.which('emcc') or ''), '..', 'bin', 'wasm-opt')
+    if not os.path.isfile(tool):
+        tool = shutil.which('wasm-opt')
+    if tool is None:
+        print('release: wasm-opt was not found, the wasm stays as linked')
+        return 0
+    args = [tool, wasm, '-O2', '--enable-threads', '--enable-bulk-memory', '--enable-simd', '--enable-mutable-globals', '--enable-sign-ext',
+            '--enable-nontrapping-float-to-int', '-g', '-o', optimized]
+    if env['tailcalls']:
+        args.append('--enable-tail-call')
+    before = os.path.getsize(wasm)
+    if subprocess.call(args) != 0:
+        print('release: wasm-opt failed, the wasm stays as linked')
+        if os.path.exists(optimized):
+            os.remove(optimized)
+        return 0
+    os.replace(optimized, wasm)
+    print('release: wasm-opt: %d -> %d bytes' % (before, os.path.getsize(wasm)))
+    return 0
+
+if env['release']:
+    env.AddPostAction(program, Action(run_wasm_opt, 'wasm-opt -O2 (release build)'))
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the embedded server module (a separate wasm module: its own memory, and AzerothCore's GPL stays out of the client binary)
+
+if env['server'] and not clean:
+    def build_server(target, source, env):
+        server_out = os.path.join(out_dir, 'server', 'acore')
+        status = subprocess.call(['bash', os.path.join('server', 'acore', 'wasm', 'build-server.sh'), os.path.join('build', 'server-wasm'), server_out])
+        # its data/ and init/: the databases built from AzerothCore's SQL (when that, the shim or the DBC files changed), then the manifests again
+        status = status or subprocess.call([sys.executable, os.path.join('server', 'acore', 'wasm', 'pack-assets.py'), server_out, '--if-changed'] + (['--dbc-pack'] if env['dbcpack'] else []))
+        if status == 0:
+            for remote_name in ['data', 'patch', 'init']:
+                if os.path.isdir(os.path.join(server_out, remote_name)):
+                    make_remote_manifest.manifest(os.path.join(server_out, remote_name))
+        return status
+    server_module = env.Command(os.path.join(out_dir, 'server', 'acore', 'worldserver.wasm'), [],
+                                Action(build_server, 'Building the embedded server (AzerothCore as WebAssembly)'))
+    env.AlwaysBuild(server_module)   # cmake decides what is out of date
+    if dbc_step:
+        env.Depends(server_module, dbc_step)
+    env.Alias('server', server_module)

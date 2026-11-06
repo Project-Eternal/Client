@@ -18,6 +18,7 @@ seg*.llinc
 **/SR*/*.asm
 **/SR*/*.s
 **/SR*/*.llasm
+!**/SRW/native_procs.llasm
 
 SR*/udis86*/**/Makefile
 SR*/udis86*/config.h
@@ -34,4 +35,19 @@ midi-plugins/**/include
 !midi-plugins/xcom12/include
 midi-plugins/**/lib
 
+# WoW build products
+**/SR-WoW/data
+**/SR-WoW/publish/
+**/SR-WoW/stress/
+**/SR-WoW/build/
+**/SR-WoW/recompiled/
+**/SR-WoW/SRW/work/
 __pycache__/
+
+# AzerothCore data made by tools (SQLite databases, extracted DBC files): the databases come from acore-db-setup, the DBC files from scons dbc (into build/game/server/dbc)
+games/WoW/SR-WoW/server/acore/data/
+
+# the game's files: made by the build from a game installation (build/game/ is under build/), or kept by the developer
+games/WoW/SR-WoW/web/resources/*.png
+games/WoW/SR-WoW/patch/Data/Interface/GlueXML/GlueXML.toc
+games/WoW/SR-WoW/tools/audio-test/sample-mp3.inc

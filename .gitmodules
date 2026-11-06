@@ -1,0 +1,19 @@
+[submodule "games/WoW/SR-WoW/server/acore/azerothcore"]
+	path = games/WoW/SR-WoW/server/acore/azerothcore
+       url = https://github.com/Project-Eternal/EternalCore.git
+       branch = master
+[submodule "games/WoW/SR-WoW/third_party/sqlite"]
+       path = games/WoW/SR-WoW/third_party/sqlite
+       url = https://github.com/sqlite/sqlite.git
+[submodule "games/WoW/SR-WoW/third_party/openssl"]
+       path = games/WoW/SR-WoW/third_party/openssl
+       url = https://github.com/openssl/openssl.git
+[submodule "games/WoW/SR-WoW/third_party/boost"]
+       path = games/WoW/SR-WoW/third_party/boost
+       url = https://github.com/boostorg/boost.git
+[submodule "games/WoW/SR-WoW/server/acore/modules/mod-wowcontroller"]
+	path = games/WoW/SR-WoW/server/acore/modules/mod-wowcontroller
+	url = https://github.com/Project-Eternal/mod-wowcontroller.git
+[submodule "games/WoW/SR-WoW/server/acore/modules/mod-p2p"]
+	path = games/WoW/SR-WoW/server/acore/modules/mod-p2p
+	url = https://github.com/Project-Eternal/mod-p2p.git

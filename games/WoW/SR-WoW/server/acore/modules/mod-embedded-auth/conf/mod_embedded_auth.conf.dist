@@ -1,0 +1,11 @@
+###################################################################################################
+# EMBEDDED AUTHENTICATION (mod-embedded-auth)
+#
+#    EmbeddedAuth.Enable
+#        Description: Run the logon server (what authserver does) inside the worldserver process.
+#                     It uses the world's LoginDatabase; RealmServerPort, BindIP, RealmsStateUpdateDelay
+#                     and WrongPass.* of authserver.conf apply (put them into worldserver.conf).
+#        Default:     0 - Disabled
+#                     1 - Enabled
+#
+EmbeddedAuth.Enable = 0

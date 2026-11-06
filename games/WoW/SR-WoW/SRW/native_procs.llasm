@@ -1,0 +1,195 @@
+;; Procedures of the program that are replaced by a body calling native code (split_llasm.py puts them in place of the generated
+;; ones). Only for loops that run long: every basic block of the program is a procedure and a block per iteration costs a
+;; dispatch, ~50-100 times what the program spent natively. Each replacement keeps the registers and memory the program leaves
+;; behind and continues at the same places.
+
+;; 0x4470c7: the loop of "add a dword to a vector unless it is in it" (vector: begin [this+4], end [this+8]; esi = this, edi = the
+;; iterator, the value is the argument [ebp+8]); the whole scan is done at once. Found: the function returns (eax = value); not
+;; found: it continues at the code that adds the value.
+proc loc_4470C7
+add tmpadr, esi, 8
+load tmp2, tmpadr, 1
+add tmpadr, ebp, -4
+store tmp2, tmpadr, 1
+add tmpadr, ebp, 8
+load tmp1, tmpadr, 1
+mov tmp0, edi
+call WoW_FindDword_c tmp0, tmp2, tmp1
+mov edi, tmp0
+add tmpadr, ebp, 8
+load eax, tmpadr, 1
+add tmpadr, esi, 8
+load tmp1, tmpadr, 1
+sub tmpcnd, edi, tmp1
+ctcallz tmpcnd, loc_447112
+
+tcall loc_447168
+endp
+
+;; 0x431640: the loop that looks for the index of a dword in a vector (esi = the vector, ebx = the index to start at, the key is the
+;; dword at +0x10 of the record [ebp+0xc]); it leaves the index (the size when it is not there) in ebx and goes on at 0x431671.
+proc loc_431640
+add tmpadr, esi, 4
+load edi, tmpadr, 1
+add tmpadr, esi, 8
+load tmp2, tmpadr, 1
+add tmpadr, ebp, 12
+load tmp3, tmpadr, 1
+add tmpadr, tmp3, 16
+load tmp1, tmpadr, 1
+mov tmp0, edi
+call WoW_FindIndex_c tmp0, tmp2, tmp1, ebx
+mov ebx, tmp0
+tcall loc_431671
+endp
+
+;; 0x6bb240 (3.3.5): the scan of the machine for the login (Scan.dll, which Blizzard's patcher downloads and whose signature is
+;; checked; not available, and without it the login fails before it connects): answers as the module does for a clean machine.
+;; cdecl (file, byte *a, byte *b, const char **message, char *buffer, size); returns 1.
+proc loc_6BB240
+add tmpadr, esp, 8
+load tmp0, tmpadr, 1
+add tmpadr, esp, 12
+load tmp1, tmpadr, 1
+add tmpadr, esp, 16
+load tmp2, tmpadr, 1
+add tmpadr, esp, 20
+load tmp3, tmpadr, 1
+call WoW_ScanStub_c tmp0, tmp1, tmp2, tmp3
+mov eax, tmp0
+POP tmp1
+tcall tmp1
+endp
+
+;; 3.3.5: the four callbacks the client gives FMOD Ex for its sound files (the fields of the CREATESOUNDEXINFO built at 0x87efaa; they
+;; call Storm with the handle the client opened). WoW-sndfile.c serves the files the archives can give from memory, which spares the
+;; sound threads a visit of the big lock for every piece of 2 KB. What it does not handle (it answers 0xffffffff) goes on in the
+;; original procedure, kept in the padding after the replaced one (";;keep", then the original's address plus 0x10 is free).
+
+;; open (name, unicode, &size, &handle, &userdata), stdcall: C calls the original itself, always handled
+;;keep loc_87B388
+proc loc_87B300
+add tmpadr, esp, 4
+load tmp0, tmpadr, 1
+add tmpadr, esp, 12
+load tmp1, tmpadr, 1
+add tmpadr, esp, 16
+load tmp2, tmpadr, 1
+add tmpadr, esp, 20
+load tmp3, tmpadr, 1
+call WoW_SndOpen_c tmp0, tmp1, tmp2, tmp3
+mov eax, tmp0
+POP tmp1
+add esp, esp, 20
+tcall tmp1
+endp
+
+;; close (handle, userdata)
+;;keep loc_878188
+proc loc_878170
+add tmpadr, esp, 4
+load tmp0, tmpadr, 1
+call WoW_SndClose_c tmp0
+mov eax, tmp0
+add tmp1, tmp0, 1
+ctcallz tmp1, loc_878188
+tcall loc_87818C
+endp
+
+;;add
+proc loc_87818C
+POP tmp1
+add esp, esp, 8
+tcall tmp1
+endp
+
+;; read (handle, buffer, size, &bytes read, userdata)
+;;keep loc_8781F0
+proc loc_878190
+add tmpadr, esp, 4
+load tmp0, tmpadr, 1
+add tmpadr, esp, 8
+load tmp1, tmpadr, 1
+add tmpadr, esp, 12
+load tmp2, tmpadr, 1
+add tmpadr, esp, 16
+load tmp3, tmpadr, 1
+call WoW_SndRead_c tmp0, tmp1, tmp2, tmp3
+mov eax, tmp0
+add tmp1, tmp0, 1
+ctcallz tmp1, loc_8781F0
+tcall loc_8781F8
+endp
+
+;;add
+proc loc_8781F8
+POP tmp1
+add esp, esp, 20
+tcall tmp1
+endp
+
+;; seek (handle, position, userdata)
+;;keep loc_878218
+proc loc_878200
+add tmpadr, esp, 4
+load tmp0, tmpadr, 1
+add tmpadr, esp, 8
+load tmp1, tmpadr, 1
+call WoW_SndSeek_c tmp0, tmp1
+mov eax, tmp0
+add tmp1, tmp0, 1
+ctcallz tmp1, loc_878218
+tcall loc_87821C
+endp
+
+;;add
+proc loc_87821C
+POP tmp1
+add esp, esp, 12
+tcall tmp1
+endp
+
+;; 3.3.5: Storm's open (hMpq, name, scope, &handle), 260 callers: every name opened is reported to WoW-prefetch.c, then the original goes on
+;; (kept in the padding after the function).
+;;keep loc_424E44
+proc loc_424B50
+add tmpadr, esp, 8
+load tmp0, tmpadr, 1
+call WoW_StormOpen_c tmp0
+tcall loc_424E44
+endp
+
+;; 3.3.5: the zlib decompressor of the client (bool uncompress(dest, &dest_length, source, source_length), cdecl, 1 = success), called for the sectors of the
+;; archives by the dispatcher at 0x458630: the loader threads spend most of their CPU here. WoW-mpqcodec.c (the chat command .zlib) does it natively; 0xffffffff
+;; (mode client, or an error) goes on in the original body, kept in the padding.
+;;keep loc_453BE4
+proc loc_453BB0
+add tmpadr, esp, 4
+load tmp0, tmpadr, 1
+add tmpadr, esp, 8
+load tmp1, tmpadr, 1
+add tmpadr, esp, 12
+load tmp2, tmpadr, 1
+add tmpadr, esp, 16
+load tmp3, tmpadr, 1
+call WoW_Uncompress_c tmp0, tmp1, tmp2, tmp3
+mov eax, tmp0
+add tmp1, tmp0, 1
+ctcallz tmp1, loc_453BE4
+tcall loc_453BE8
+endp
+
+;;add
+proc loc_453BE8
+POP tmp1
+tcall tmp1
+endp
+
+;; 0x50f7c0: the client's aspect function (cdecl, returns a float on the x87 stack): WoW_Aspect_c in WoW-win335.c (the window's aspect
+;; while the game UI is up, the canvas' while it is built: a resize in the world keeps the UI's aspect until the next /reload)
+proc loc_50F7C0
+call WoW_Aspect_c
+FLD_FLOAT tmp0
+POP tmp1
+tcall tmp1
+endp

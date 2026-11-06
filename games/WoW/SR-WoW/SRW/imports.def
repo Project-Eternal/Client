@@ -1,0 +1,61 @@
+# the imports of the game's own libraries (same format as the runtime's win32.def); the directives below describe how the glue calls them
+@cdecl-fixed DivxDecode InitializeDivxDecoder SetOutputFormat UnInitializeDivxDecoder
+@float-return FSOUND_GetVersion FSOUND_GetCPUUsage
+@implemented-by-macro FMOD_TRUE FMOD_ZERO
+DivxDecode divxdecoder 3 i i i
+InitializeDivxDecoder divxdecoder 3 i i i
+SetOutputFormat divxdecoder 4 i i i i
+UnInitializeDivxDecoder divxdecoder 1 i
+FSOUND_3D_Listener_GetAttributes fmod 8 i i i i i i i i
+FSOUND_3D_Listener_SetAttributes fmod 8 i i i i i i i i
+FSOUND_3D_SetAttributes fmod 3 i i i
+FSOUND_3D_SetDistanceFactor fmod 1 i
+FSOUND_3D_SetDopplerFactor fmod 1 i
+FSOUND_3D_SetRolloffFactor fmod 1 i
+FSOUND_Close fmod 0 
+FSOUND_File_SetCallbacks fmod 5 i i i i i
+FSOUND_GetCPUUsage fmod 0 
+FSOUND_GetDriver fmod 0 
+FSOUND_GetDriverCaps fmod 2 i i
+FSOUND_GetDriverName fmod 1 i
+FSOUND_GetError fmod 0 
+FSOUND_GetMaxChannels fmod 0 
+FSOUND_GetMixer fmod 0 
+FSOUND_GetNumDrivers fmod 0 
+FSOUND_GetNumHWChannels fmod 3 i i i
+FSOUND_GetOutput fmod 0 
+FSOUND_GetOutputRate fmod 0 
+FSOUND_GetVersion fmod 0 
+FSOUND_Init fmod 3 i i i
+FSOUND_IsPlaying fmod 1 i
+FSOUND_Reverb_GetProperties fmod 1 i
+FSOUND_Reverb_SetChannelProperties fmod 2 i i
+FSOUND_Reverb_SetProperties fmod 1 i
+FSOUND_Sample_SetMinMaxDistance fmod 3 i i i
+FSOUND_SetBufferSize fmod 1 i
+FSOUND_SetDriver fmod 1 i
+FSOUND_SetFrequency fmod 2 i i
+FSOUND_SetHWND fmod 1 i
+FSOUND_SetMaxHardwareChannels fmod 1 i
+FSOUND_SetMemorySystem fmod 5 i i i i i
+FSOUND_SetMinHardwareChannels fmod 1 i
+FSOUND_SetMixer fmod 1 i
+FSOUND_SetMute fmod 2 i i
+FSOUND_SetOutput fmod 1 i
+FSOUND_SetPaused fmod 2 i i
+FSOUND_SetReserved fmod 2 i i
+FSOUND_SetSFXMasterVolume fmod 1 i
+FSOUND_SetVolume fmod 2 i i
+FSOUND_StopSound fmod 1 i
+FSOUND_Stream_Close fmod 1 i
+FSOUND_Stream_GetLengthMs fmod 1 i
+FSOUND_Stream_GetSample fmod 1 i
+FSOUND_Stream_GetTime fmod 1 i
+FSOUND_Stream_Open fmod 4 i i i i
+FSOUND_Stream_Play fmod 2 i i
+FSOUND_Stream_PlayEx fmod 4 i i i i
+FSOUND_Stream_SetEndCallback fmod 3 i i i
+FSOUND_Stream_SetLoopCount fmod 2 i i
+FSOUND_Stream_SetTime fmod 2 i i
+FSOUND_Stream_Stop fmod 1 i
+FSOUND_Update fmod 0 

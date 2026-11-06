@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en-us">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-visual">
+<title>WoW Eternal</title>
+<link rel="stylesheet" href="style.css">
+<link rel="shortcut icon" href="favicon.ico">
+</head>
+<body class="page-game start-pending">
+<div id="page-game" class="page">
+<canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+<div id="start-overlay">
+<div id="start-window" class="panel">
+<button id="btn-start" class="game-button" type="button">Start</button>
+<div id="start-tabs" role="tablist"></div>
+<div id="start-rows" role="tabpanel"></div>
+</div>
+<div id="shell-message" role="status"><div id="status-text"></div><div id="shell-progress" hidden><span id="shell-progress-label"></span><div id="shell-progress-bar"><div id="shell-progress-fill"></div></div></div></div>
+</div>
+</div>
+<div id="ui-container">
+<div id="topbar">
+<button id="btn-game" class="active" type="button" title="Game"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2l10 6-10 6z"/></svg><span class="label">Game</span></button>
+<button id="btn-settings" type="button" title="Settings"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12v2H2zm0 4h12v2H2zm0 4h12v2H2z"/></svg><span class="label">Settings</span></button>
+<button id="btn-log" type="button" title="Log"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 1h8l3 3v11H3zm2 5v1h6V6zm0 3v1h6V9z"/></svg><span class="label">Log</span></button>
+<button id="btn-export" type="button" title="Export" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1l4 4H9v6H7V5H4zM2 13h12v2H2z"/></svg><span class="label">Export</span></button>
+<button id="btn-import" type="button" title="Import" disabled><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 1h2v6h3l-4 4-4-4h3zM2 13h12v2H2z"/></svg><span class="label">Import</span></button>
+<input id="import-input" type="file" accept=".zip,application/zip" hidden>
+<a id="btn-discord" class="bar-button" href="https://discord.com/invite/5ku3KBgMdC" target="_blank" rel="noopener" aria-label="Discord" title="Discord"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.3.5a14 14 0 0 1 4.2 2 15 15 0 0 0-14.6 0 14 14 0 0 1 4.2-2L8.6 3a19.8 19.8 0 0 0-4.9 1.4C.6 9 -.3 13.4.1 17.8a19.9 19.9 0 0 0 6 3l1.3-2.1a13 13 0 0 1-2-1l.5-.4a14.200 14.200 0 0 0 12.200 0l.5.4a13 13 0 0 1-2 1l1.300 2.100a19.900 19.900 0 0 0 6-3c.5-5.100-.8-9.500-3.600-13.400zM8.500 15.100c-1.200 0-2.100-1.100-2.100-2.400s.9-2.400 2.100-2.400 2.100 1.100 2.100 2.400-.9 2.400-2.100 2.400zm7 0c-1.200 0-2.100-1.100-2.100-2.400s.9-2.400 2.100-2.400 2.100 1.100 2.100 2.400-.9 2.400-2.100 2.400z"/></svg></a>
+<button id="btn-keyboard" class="phone-only" type="button" title="Keyboard"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 3h14v10H1zm2 2v2h2V5zm3 0v2h2V5zm3 0v2h2V5zm3 0v2h1V5zM3 8v2h2V8zm3 0v2h4V8zm5 0v2h2V8z"/></svg><span class="label">Keyboard</span></button>
+<button id="btn-fullscreen" type="button" title="Fullscreen"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 1h5v2H3v3H1zm9 0h5v5h-2V3h-3zM1 10h2v3h3v2H1zm12 0h2v5h-5v-2h3z"/></svg><span class="label">Fullscreen</span></button>
+</div>
+<div id="quality" role="img" aria-label="Connection quality" hidden><div id="quality-fill"></div><div id="quality-text"></div></div>
+<section id="pages">
+<div id="page-settings" class="page">
+<div id="settings-panel" class="settings-panel"></div>
+</div>
+<div id="page-log" class="page">
+<textarea id="output" rows="8" readonly></textarea>
+</div>
+</section>
+</div>
+<script type="text/javascript" src="version.js"></script>
+<script type="text/javascript" src="kept.js"></script>
+<script type="text/javascript" src="acore-hub.js"></script>
+<script type="text/javascript" src="acore.js"></script>
+<script type="text/javascript" src="controls.js"></script>
+<script type="text/javascript" src="settings.js"></script>
+<script type="text/javascript" src="datasource.js"></script>
+<script type="text/javascript" src="shell.js"></script>
+<script type="text/javascript" src="module.js"></script>
+<script type="text/javascript" src="start.js"></script>
+<script type="text/javascript" src="export.js"></script>
+<template id="deferred-module-script">{{{ SCRIPT }}}</template>
+<script type="text/javascript">
+window.addEventListener('load', function () {
+  var tmpl = document.getElementById('deferred-module-script');
+  document.body.appendChild(tmpl.content.cloneNode(true));
+});
+</script>
+</body>
+</html>

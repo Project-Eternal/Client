@@ -1,12 +1,15 @@
 The licenses of this repository:
 
-- The MIT License below. The files that carry a license header
+- games/WoW: the Mozilla Public License 2.0 (games/WoW/LICENSE), except the
+  third-party code in it.
+- Everything else: the MIT License below. The files that carry a license header
   are under the terms of that header. For the purpose of using the code in GPL
   projects, it is also released under the GPLv2 or later and the LGPLv2.1 or
   later.
 - Third-party code (libraries and components by other people, such as
-  SRW-web/d3d9-webgl and the libraries under midi-plugins and
-  scaler-plugins) keeps its own license, stated in its files.
+  games/WoW/SR-WoW/third_party, SRW-web/d3d9-webgl, the libraries under
+  midi-plugins and scaler-plugins, and the submodules) keeps its own license,
+  stated in its files.
 
 MIT License
 

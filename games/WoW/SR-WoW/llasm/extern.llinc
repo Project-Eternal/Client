@@ -1,0 +1,17 @@
+;; C functions the recompiled program calls that are not Windows imports
+
+funcv SRW_Unimplemented_c id
+funcv SRW_Trace_c id, caller
+funcv SRW_Proc_c addr
+funcv SRW_Unsupported_c addr
+func SRW_D3DStub_c id
+func WoW_FindDword_c start, end, value
+func WoW_FindIndex_c begin, end, key, index
+func WoW_ScanStub_c a, b, message, buffer
+func WoW_SndOpen_c name, size, handle, userdata
+func WoW_SndClose_c handle
+func WoW_SndRead_c handle, buffer, size, bytesread
+func WoW_SndSeek_c handle, position
+func WoW_StormOpen_c name
+func WoW_Uncompress_c dest, destlen, source, sourcelen
+func WoW_Aspect_c
