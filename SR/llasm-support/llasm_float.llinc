@@ -531,3 +531,93 @@ endm
 macro FTOL_INT64
     call x87_ftol_int64 $
 endm
+
+
+;; instructions used by the 32-bit Windows C runtime
+funcv x87_fldpi_void $
+funcv x87_fldl2e_void $
+funcv x87_fldl2t_void $
+funcv x87_fld_tword $, addr
+funcv x87_fstp_tword $, addr
+funcv x87_fsubr_to_st $, num
+funcv x87_fdivr_to_st $, num
+funcv x87_f2xm1_void $
+funcv x87_fpatan_void $
+funcv x87_fprem_void $
+funcv x87_fprem1_void $
+funcv x87_frndint_void $
+funcv x87_fscale_void $
+funcv x87_fsincos_void $
+funcv x87_fxam_void $
+funcv x87_fnstenv_void $, addr
+funcv x87_fldenv_void $, addr
+
+macro FLDPI_VOID
+    call x87_fldpi_void $
+endm
+
+macro FLDL2E_VOID
+    call x87_fldl2e_void $
+endm
+
+macro FLDL2T_VOID
+    call x87_fldl2t_void $
+endm
+
+macro FLD_TWORD addr
+    call x87_fld_tword $, \addr
+endm
+
+macro FSTP_TWORD addr
+    call x87_fstp_tword $, \addr
+endm
+
+macro FSUBR_TO_ST num
+    call x87_fsubr_to_st $, \num
+endm
+
+macro FDIVR_TO_ST num
+    call x87_fdivr_to_st $, \num
+endm
+
+macro F2XM1_VOID
+    call x87_f2xm1_void $
+endm
+
+macro FPATAN_VOID
+    call x87_fpatan_void $
+endm
+
+macro FPREM_VOID
+    call x87_fprem_void $
+endm
+
+macro FPREM1_VOID
+    call x87_fprem1_void $
+endm
+
+macro FRNDINT_VOID
+    call x87_frndint_void $
+endm
+
+macro FSCALE_VOID
+    call x87_fscale_void $
+endm
+
+macro FSINCOS_VOID
+    call x87_fsincos_void $
+endm
+
+macro FXAM_VOID
+    call x87_fxam_void $
+endm
+
+macro FNSTENV_VOID addr
+    call x87_fnstenv_void $, \addr
+endm
+
+macro FLDENV_VOID addr
+    call x87_fldenv_void $, \addr
+endm
+
+

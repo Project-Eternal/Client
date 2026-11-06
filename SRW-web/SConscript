@@ -1,0 +1,205 @@
+import os
+import shutil
+import subprocess
+import sys
+
+# The runtime for a program recompiled from Windows: the executable is recompiled by SRW into llasm, split into modules and compiled to WebAssembly;
+# the Windows functions, Direct3D 9 on WebGL and the support code of the recompiled instructions are compiled with it. The game's SConstruct gives the
+# program in `params` and links the objects returned here with its own.
+#
+#   program_name   the name of the program (its install folder and executable are named after it)
+#   client_exe     the executable
+#   llasm_dir      the program's own llasm include files (extern.llinc, macros.llinc...)
+#   program_dir    the program's description of its executable: prepare_exe.py, SR.cfg, llasm/*.sci and the imports of its own libraries
+#   source_dirs    the folders with the program's own C files (the imports they implement are found there)
+#   import_defs    definition files of the imports of the program's own libraries
+#   chunks         the number of code modules
+#   va_map         the base and size of the address range of the code
+#   snapshot_memory  the range of memory that the build option snapshot=ADDRESS,COUNT,LENGTH[,SECOND] writes to a file (see src/main.c)
+#   shaders_inc    the table of translated pixel shaders for the Direct3D layer
+#   defines        further definitions for the compiler
+#   trace          the build logs the name of every import
+#   traceprocs     the build records the address of every procedure entered
+#   inline         the inline threshold of opt (-1: the default)
+#   tailcalls      WebAssembly tail calls between the recompiled procedures
+
+Import('env', 'params')
+
+web_dir = Dir('.').abspath
+repo_dir = os.path.dirname(web_dir)
+srw_dir = os.path.join(repo_dir, 'SRW')
+support_dir = os.path.join(repo_dir, 'SR', 'llasm-support')
+llasm_tool = os.path.join(repo_dir, 'llasm', 'llasm')
+recompiler_dir = os.path.join(web_dir, 'recompiler')
+top_dir = Dir('#').abspath   # (the folder of the program's SConstruct: paths of the build are relative to it)
+recompiled_dir = os.path.join(top_dir, 'recompiled')
+build_dir = os.path.join(top_dir, 'build')
+program_dir = params['program_dir']
+clean = env.GetOption('clean')
+trace = params['trace']
+traceprocs = params['traceprocs']
+chunks = params['chunks']
+inline_threshold = params['inline']
+
+env.Append(CPPPATH = [os.path.join(web_dir, 'include'), os.path.join(web_dir, 'src'), recompiled_dir, support_dir])
+env.Append(CCFLAGS = '-DSRW_PROGRAM_NAME=\\"%s\\"' % params['program_name'])
+for define in params['defines']:
+    env.Append(CCFLAGS = define)
+if ARGUMENTS.get('snapshot'):
+    snapshot = ARGUMENTS['snapshot'].split(',')
+    env.Append(CCFLAGS = '-DSRW_SNAPSHOT_ADDRESS=%s -DSRW_SNAPSHOT_COUNT=%s -DSRW_SNAPSHOT_LENGTH=%s' % tuple(snapshot[:3]))
+    if 'snapshot_memory' not in params:
+        raise Exception('the snapshot option needs the game parameter snapshot_memory, the range (low, high) of memory to write')
+    env.Append(CCFLAGS = '-DSRW_SNAPSHOT_MEMORY_LO=0x%x -DSRW_SNAPSHOT_MEMORY_HI=0x%x' % tuple(params['snapshot_memory']))
+    if len(snapshot) > 3:
+        if int(snapshot[3], 0) >= int(snapshot[2], 0):
+            raise Exception('the snapshot option needs SECOND below LENGTH')
+        env.Append(CCFLAGS = '-DSRW_SNAPSHOT_SECOND=%s' % snapshot[3])
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the recompiler: SRW.exe is built from SRW/ at the top of the repository, then run on the executable
+
+def build_srw(target, source, env):
+    # the same interpreter and site-packages as this scons
+    subprocess.check_call([sys.executable, '-c', 'import SCons.Script; SCons.Script.main()', '-C', srw_dir, '-j4'])
+    shutil.copyfile(os.path.join(srw_dir, 'SRW.exe'), str(target[0]))
+    os.chmod(str(target[0]), 0o755)
+    return 0
+
+def run_recompiler(target, source, env):
+    exe, srw = str(source[0]), str(source[1])
+    child_env = dict(os.environ)
+    if 'SRW_PYLIB' in child_env:
+        child_env['PYTHONPATH'] = child_env['SRW_PYLIB'] + os.pathsep + child_env.get('PYTHONPATH', '')
+    result = subprocess.run([sys.executable, os.path.join(recompiler_dir, 'recompile.py'), os.path.abspath(exe), os.path.abspath(srw), recompiled_dir,
+                             os.path.abspath(program_dir), '1' if traceprocs else '0', hex(params['va_map'][0]), hex(params['va_map'][1])],
+                            env=child_env)
+    if result.returncode != 0:
+        raise Exception("the recompiler failed (it needs python with capstone and pefile: pip install capstone pefile)")
+    for node in target:
+        if not os.path.isfile(str(node)):
+            raise Exception("the recompiler did not produce " + str(node))
+    return 0
+
+recompiled_modules = ['data.ll'] + ['code-%02d.llasm' % n for n in range(chunks)]
+recompiled_info = ['imports.txt', 'entry.txt', 'vamap.c']
+glue_targets = ['glue.llasm', 'imports.c', 'imports.h']
+recompiled_llasm = recompiled_modules[1:] + ['glue.llasm']
+win32_defs = [os.path.join(recompiler_dir, 'win32.def')]
+dynamic_defs = [os.path.join(recompiler_dir, n) for n in ('dynamic.def', 'd3d9.def', 'dsound.def')]
+source_dirs = [os.path.join(web_dir, 'src')] + [os.path.abspath(d) for d in params['source_dirs']]
+
+def run_glue(target, source, env):
+    result = subprocess.run([sys.executable, os.path.join(recompiler_dir, 'gen_glue.py'), recompiled_dir,
+                             '--trace', '1' if trace else '2' if env['diagnostics'] else '0',
+                             '--defs'] + win32_defs + [os.path.abspath(d) for d in params['import_defs']] +
+                            ['--dynamic'] + dynamic_defs + ['--src'] + source_dirs)
+    if result.returncode != 0:
+        raise Exception("the glue could not be generated")
+    return 0
+
+objs = []
+if not clean:
+    srw_sources = [os.path.join(srw_dir, f) for f in sorted(os.listdir(srw_dir)) if f.endswith(('.c', '.cpp', '.h', 'SConstruct'))]
+    srw_exe = env.Command(os.path.join(os.path.abspath(program_dir), 'SRW.exe'), srw_sources, Action(build_srw, "Building the static recompiler (SRW)"))
+    recompiler_sources = ([params['client_exe'], srw_exe, env.Value(traceprocs)] +
+                          [os.path.join(os.path.abspath(program_dir), n) for n in ('prepare_exe.py', 'native_procs.llasm', 'SR.cfg')] +
+                          [os.path.join(recompiler_dir, n) for n in ('recompile.py', 'split_llasm.py')] +
+                          Glob(os.path.join(os.path.abspath(program_dir), 'llasm', '*.sci')))
+    recompiler_targets = env.Command([os.path.join(recompiled_dir, n) for n in recompiled_modules + recompiled_info],
+                                     recompiler_sources, Action(run_recompiler, "Recompiling the program (SRW)"))
+    # unchanged outputs are kept as they are, so that the modules are not recompiled for nothing
+    env.Precious(recompiler_targets)
+
+    # the procedures of the imports: quick, and depends on which imports the C files implement
+    # (the set of implemented imports is passed as a value: scanning the C files themselves would make the glue depend on imports.h, which it generates)
+    sys.path.insert(0, recompiler_dir)
+    import gen_glue
+    implemented_imports = env.Value([sorted(gen_glue.find_implementations(source_dirs)), trace, env['diagnostics']])
+    glue_sources = (recompiler_targets[len(recompiled_modules):] + win32_defs + dynamic_defs + [os.path.abspath(d) for d in params['import_defs']] +
+                    [os.path.join(recompiler_dir, 'gen_glue.py'), implemented_imports])
+    glue = env.Command([os.path.join(recompiled_dir, n) for n in glue_targets], glue_sources, Action(run_glue, "Generating the import glue"))
+    env.Precious(glue)
+
+# ---------------------------------------------------------------------------------------------------------------------
+# llasm -> LLVM IR -> optimized -> wasm32 object. The three tools run as separate steps whose exit statuses are all
+# checked (in a shell pipe only the status of the last one would be seen and a failed llasm would go unnoticed).
+
+env.Append(LLASMFLAGS = ('' if params['tailcalls'] else '-no-tail-calls ') + '-inline-float -va-map 0x%x 0x%x' % tuple(params['va_map']),
+           LLVMFLAGS = '-march=wasm32' + (' -mattr=+tail-call' if params['tailcalls'] else ''))
+
+def compile_llasm(target, source, env):
+    # the assembler of this repository (build it with llasm/komp.sh); the one on PATH may be older and lack -va-map
+    llasm = llasm_tool
+    if not os.path.isfile(llasm):
+        llasm = shutil.which('llasm')
+    llasm_args = [llasm, str(source[0]), '-O'] + env.subst('$LLASMFLAGS').split() + \
+                 ['-I', os.path.abspath(params['llasm_dir']), '-I', support_dir]
+    llc_args = ['llc', '-O=3', '-filetype=obj'] + env.subst('$LLVMFLAGS').split()
+
+    procs = []
+    try:
+        with open(str(target[0]), 'wb') as out:
+            p1 = subprocess.Popen(llasm_args, stdout=subprocess.PIPE)
+            p2 = subprocess.Popen(['opt', '-O3'] + (['-inline-threshold=' + str(inline_threshold)] if inline_threshold >= 0 else []), stdin=p1.stdout, stdout=subprocess.PIPE)
+            p3 = subprocess.Popen(llc_args, stdin=p2.stdout, stdout=out)
+            procs = [('llasm', p1), ('opt', p2), ('llc', p3)]
+            p1.stdout.close()
+            p2.stdout.close()
+            for name, p in procs:
+                p.wait()
+        for name, p in procs:
+            if p.returncode != 0:
+                raise Exception("%s failed (exit status %d) for %s" % (name, p.returncode, source[0]))
+    except Exception:
+        try:
+            os.remove(str(target[0]))
+        except OSError:
+            pass
+        raise
+    return 0
+
+env.Append(BUILDERS = {'Llasm' : Builder(action = Action(compile_llasm, "llasm | opt | llc $SOURCE"), suffix = '.o', src_suffix = '.llasm')})
+
+# the data: the image of the executable at 0x400000 (an LLVM module, compiled on its own); it must come first in the link
+def compile_image(target, source, env):
+    llc_args = ['llc', '-O=0', '-filetype=obj'] + env.subst('$LLVMFLAGS').split() + ['-o', str(target[0]), str(source[0])]
+    if subprocess.call(llc_args) != 0:
+        raise Exception("llc failed for " + str(source[0]))
+    return 0
+
+image_obj = env.Command(os.path.join(build_dir, 'data.o'), os.path.join(recompiled_dir, 'data.ll'), Action(compile_image, "llc $SOURCE"))
+
+llinc_files = Glob(os.path.join(os.path.abspath(params['llasm_dir']), '*.llinc')) + [File(os.path.join(support_dir, f)) for f in sorted(os.listdir(support_dir)) if f.endswith('.llinc')]
+
+llasm_objs = []
+for name in recompiled_llasm:
+    obj = env.Llasm(os.path.join(build_dir, os.path.splitext(name)[0]), os.path.join(recompiled_dir, name))
+    env.Depends(obj, llinc_files)
+    env.Depends(obj, env.Value(env.subst('$LLASMFLAGS') + ' inline=' + str(inline_threshold)))   # the range of the address map is compiled into the code
+    llasm_objs += obj
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the runtime: the Windows functions, the generated import table and the support code of the recompiled program
+
+runtime_sources = sorted(f for f in os.listdir(os.path.join(web_dir, 'src')) if f.endswith('.c'))
+runtime_objs = [env.Object(os.path.join(build_dir, os.path.splitext(f)[0]), os.path.join(web_dir, 'src', f)) for f in runtime_sources]
+# Direct3D 9: the bridge for the program (C++) and d3d9-webgl, which draws with WebGL (its entry point is renamed, the program's own procedure has the
+# name Direct3DCreate9)
+cxx_env = env.Clone()
+cxx_env.Append(CXXFLAGS = '-std=c++17 -Wno-deprecated-declarations')
+runtime_objs += [cxx_env.Object(os.path.join(build_dir, 'd3d9-bridge'), os.path.join(web_dir, 'src', 'd3d9-bridge.cpp')),
+                 cxx_env.Object(os.path.join(build_dir, 'd3d9-webgl'), os.path.join(web_dir, 'd3d9-webgl', 'd3d9.cpp'),
+                                CPPDEFINES = ['Direct3DCreate9=WebGLDirect3DCreate9', ('D3D9_PIXEL_SHADERS_INC', '\\"%s\\"' % params['shaders_inc'])])]
+if params['shaders_node'] is not None:
+    env.Depends(runtime_objs[-1], params['shaders_node'])
+runtime_objs += [env.Object(os.path.join(build_dir, 'imports'), os.path.join(recompiled_dir, 'imports.c')),
+                 env.Object(os.path.join(build_dir, 'vamap'), os.path.join(recompiled_dir, 'vamap.c'))]
+
+# helpers the recompiled instructions call (x87 emulation, string operations, division...)
+support_names = ['llasm_float', 'llasm_int', 'llasm_cmps', 'llasm_divide', 'llasm_movs', 'llasm_pushx', 'llasm_scas', 'llasm_stos', 'llasm_inout', 'llasm_fs_mem']
+support_objs = [env.Object(os.path.join(build_dir, name), os.path.join(support_dir, name + '.c')) for name in support_names]
+# the SSE/MMX helpers use the vector types of the compiler: WebAssembly SIMD
+support_objs += [env.Object(os.path.join(build_dir, 'llasm_sse'), os.path.join(support_dir, 'llasm_sse.c'), CCFLAGS = env['CCFLAGS'] + ['-msimd128'])]
+
+Return('image_obj', 'runtime_objs', 'support_objs', 'llasm_objs', 'cxx_env')

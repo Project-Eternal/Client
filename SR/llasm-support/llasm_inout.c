@@ -24,6 +24,7 @@
  *
  */
 
+#include <time.h>
 #include "llasm_cpu.h"
 
 
@@ -107,3 +108,24 @@ EXTERNC void CCALL x86_out_dx_eax(CPU)
     X86_OutPortProcedure(edx & 0xffff, 4, eax);
 }
 
+extern uint64_t SRW_NowNs(void) __attribute__((weak));
+
+/* the time stamp counter runs at a nominal 1 GHz, derived from the monotonic clock */
+EXTERNC void CCALL x86_rdtsc(CPU)
+{
+    uint64_t ticks;
+
+    if (SRW_NowNs != NULL)
+    {
+        ticks = SRW_NowNs();   /* the clock of the port that is the same for all threads */
+    }
+    else
+    {
+        struct timespec now;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        ticks = (uint64_t) now.tv_sec * 1000000000ull + (uint64_t) now.tv_nsec;
+    }
+    eax = (uint32_t) ticks;
+    edx = (uint32_t) (ticks >> 32);
+}

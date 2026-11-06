@@ -1,0 +1,45 @@
+# DirectSound: the exports of dsound.dll and the methods of its COM objects (same format as imports.def)
+DirectSoundCreate dsound 3 p p p
+DirectSoundCreate8 dsound 3 p p p
+DirectSoundEnumerateA dsound 2 i i
+DirectSoundEnumerateW dsound 2 i i
+DirectSoundCaptureEnumerateA dsound 2 i i
+DirectSoundCaptureEnumerateW dsound 2 i i
+DirectSoundCaptureCreate dsound 3 p p p
+DirectSoundCaptureCreate8 dsound 3 p p p
+DS8_QueryInterface dsound 3 i p p
+DS8_AddRef dsound 1 i
+DS8_Release dsound 1 i
+DS8_CreateSoundBuffer dsound 4 i p p p
+DS8_GetCaps dsound 2 i p
+DS8_DuplicateSoundBuffer dsound 3 i i p
+DS8_SetCooperativeLevel dsound 3 i i i
+DS8_Compact dsound 1 i
+DS8_GetSpeakerConfig dsound 2 i p
+DS8_SetSpeakerConfig dsound 2 i i
+DS8_Initialize dsound 2 i p
+DS8_VerifyCertification dsound 2 i p
+DSB8_QueryInterface dsound 3 i p p
+DSB8_AddRef dsound 1 i
+DSB8_Release dsound 1 i
+DSB8_GetCaps dsound 2 i p
+DSB8_GetCurrentPosition dsound 3 i p p
+DSB8_GetFormat dsound 4 i p i p
+DSB8_GetVolume dsound 2 i p
+DSB8_GetPan dsound 2 i p
+DSB8_GetFrequency dsound 2 i p
+DSB8_GetStatus dsound 2 i p
+DSB8_Initialize dsound 3 i i p
+DSB8_Lock dsound 8 i i i p p p p i
+DSB8_Play dsound 4 i i i i
+DSB8_SetCurrentPosition dsound 2 i i
+DSB8_SetFormat dsound 2 i p
+DSB8_SetVolume dsound 2 i i
+DSB8_SetPan dsound 2 i i
+DSB8_SetFrequency dsound 2 i i
+DSB8_Stop dsound 1 i
+DSB8_Unlock dsound 5 i p i p i
+DSB8_Restore dsound 1 i
+DSB8_SetFX dsound 4 i i p p
+DSB8_AcquireResources dsound 4 i i i p
+DSB8_GetObjectInPath dsound 5 i p i p p

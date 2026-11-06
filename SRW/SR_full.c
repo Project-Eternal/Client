@@ -94,6 +94,32 @@ static void SR_disassemble_ignore_instructions(Word_t Index, int Value, void *da
 
     int index;
 
+    if (Value < 0)
+    {
+        // a data area (data_areas.sci): the bytes stay, marked as data, so that they are written out and can be
+        // referred to, but nothing decodes them as instructions
+        for (index = -Value - 1; index >= 0; index--)
+        {
+            output_data *output;
+
+            output = section_output_list_FindEntryEqual(DATA, Index + index);
+            if (output != NULL && output->type != OT_OFFSET) // an address inside the data (a fixup) stays as it is
+            {
+                if (output->str != NULL)
+                {
+                    free(output->str);
+                    output->str = NULL;
+                }
+                output->len = 0;
+                output->type = OT_DATA;
+            }
+            section_bound_list_Delete(DATA, Index + index);
+            section_entry_list_Delete(DATA, Index + index);
+            section_export_list_Delete(DATA, Index + index);
+        }
+        return;
+    }
+
     if (Index + Value == section[DATA].size)
     {
         Value++;
@@ -508,8 +534,12 @@ int SR_full_disassembly(void)
         // process only code segments
         if (section[index].type != ST_CODE) continue;
 
+#ifdef USE_JUDY
         region = section_region_list_FindEntryFirst(index);
-        //region = section_region_list_FindEntryLast(index);
+#else
+        // flags needed at the start of a region are handed to the preceding region, so go from the end
+        region = section_region_list_FindEntryLast(index);
+#endif
 
         while (region != NULL)
         {
@@ -526,17 +556,92 @@ int SR_full_disassembly(void)
                 if (ret) return ret;
             }
 
+#ifdef USE_JUDY
             region = section_region_list_FindEntryHigher(index, region->begin_ofs);
-            /*if (region->begin_ofs != 0)
+#else
+            if (region->begin_ofs != 0)
             {
                 region = section_region_list_FindEntryLower(index, region->begin_ofs);
             }
             else
             {
                 region = NULL;
-            }*/
+            }
+#endif
         }
     }
+#endif
+
+#if (OUTPUT_TYPE == OUT_LLASM) && !defined(USE_JUDY)
+    // a region reached by a jump may need flags that the jumping region has to produce: iterate until nothing changes
+    for (;;)
+    {
+        int changed = 0;
+
+        for (index = 0; index < num_sections; index++)
+        {
+            if (section[index].type != ST_CODE) continue;
+
+            region = section_region_list_FindEntryLast(index);
+            while (region != NULL)
+            {
+                if (section_replace_list_FindEntryEqual(index, region->begin_ofs) == NULL)
+                {
+                    uint_fast32_t need = region->flags_to_write;
+                    const char *p;
+
+                    output = section_output_list_FindEntryEqual(index, region->end_ofs);
+                    p = (output != NULL && output->str != NULL) ? output->str : "";
+                    for (; *p != 0; p++)
+                    {
+                        // labels of jumps: "tcall loc_X", "ctcallz cond, loc_X", "ctcallnz cond, loc_X" at the start of a line
+                        if (p == output->str || p[-1] == '\n')
+                        {
+                            const char *label = NULL;
+
+                            if (strncmp(p, "tcall loc_", 10) == 0) label = p + 6;
+                            else if (strncmp(p, "ctcallz ", 8) == 0 || strncmp(p, "ctcallnz ", 9) == 0)
+                            {
+                                label = strstr(p, ", loc_");
+                                if (label != NULL && memchr(p, '\n', (size_t) (label - p)) == NULL) label += 2;
+                                else label = NULL;
+                            }
+                            if (label != NULL)
+                            {
+                                unsigned long address = strtoul(label + 4, NULL, 16);
+                                region_data *target;
+
+                                if (address >= section[index].start && address < section[index].start + section[index].size)
+                                {
+                                    target = section_region_list_FindEntryEqual(index, (uint_fast32_t) (address - section[index].start));
+                                    if (target != NULL) need |= (target->flags_start_jump & FL_COND_ALL);
+                                }
+                            }
+                        }
+                    }
+
+                    if (need != region->flags_translated)
+                    {
+                        region->flags_to_write = need;
+#if (OUTPUT_TYPE == OUT_LLASM)
+                        ret = SR_disassemble_region_llasm(index, region);
+#endif
+                        if (ret) return ret;
+                        changed = 1;
+                    }
+                }
+
+                if (region->begin_ofs != 0) region = section_region_list_FindEntryLower(index, region->begin_ofs);
+                else region = NULL;
+            }
+        }
+
+        if (!changed) break;
+    }
+#endif
+
+#if (OUTPUT_TYPE == OUT_LLASM)
+    if (SR_collect_report() && !SR_collect_enabled()) return 8; /* collect mode: report, then carry on with the gaps commented out */
 #endif
 
     return 0;

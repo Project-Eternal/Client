@@ -29,6 +29,9 @@ The projects consists of following subprojects (read the readme files in subproj
   * The static recompiler (for Windows executables) itself.
   * It takes the original executable as an input together with information about the original executable and produces x86 / llasm / x64 assembler version of the executable.
   * The generated x86/llasm/x64 assembler version of the executable is not part of the project.
+* **SRW-web**
+  * The runtime which lets a Windows executable recompiled by SRW (llasm version) run in a web browser as [WebAssembly](https://webassembly.org/ "WebAssembly"), built with [Emscripten](https://emscripten.org/ "Emscripten").
+  * It implements the Windows functions used by the executable on top of the browser: Direct3D 9 with WebGL 2 (an extended [d3d9-webgl](https://github.com/LostMyCode/d3d9-webgl "d3d9-webgl")), sound, threads and files read over the network.
 * **llasm**
   * Program which converts *.llasm* file to [LLVM](https://llvm.org/ "LLVM") language-independent intermediate representation, which can be compiled to native code.
 * **SR-games**

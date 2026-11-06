@@ -318,7 +318,8 @@ static int SR_LoadSCI_global_aliases(FILE *file)
     return 0;
 }
 
-static int SR_LoadSCI_ignored_areas(FILE *file)
+// sign is -1 for data areas, which are kept as data (see SR_disassemble_ignore_instructions), 1 for ignored areas
+static int SR_LoadSCI_ignored_areas(FILE *file, int sign)
 {
     char buf[8192];
     int *ignored_area_value;
@@ -352,7 +353,7 @@ static int SR_LoadSCI_ignored_areas(FILE *file)
 
             if (ignored_area_value == NULL) return 1;
 
-            *ignored_area_value = arealength;
+            *ignored_area_value = sign * arealength;
         }
     }
 
@@ -590,6 +591,7 @@ int SR_LoadSCI(void)
     const static char external_procedures[] = "external_procedures.sci";
     const static char global_aliases[] = "global_aliases.sci";
     const static char ignored_areas[] = "ignored_areas.sci";
+    const static char data_areas[] = "data_areas.sci";
     const static char instruction_replacements[] = "instruction_replacements.sci";
     const static char instruction_replacements_FPU[] = "instruction_replacements_FPU.sci";
 #if (OUTPUT_TYPE == OUT_LLASM)
@@ -699,7 +701,19 @@ int SR_LoadSCI(void)
     {
         fprintf(stderr, "\tLoading %s...\n", ignored_areas);
 
-        ret = SR_LoadSCI_ignored_areas(f);
+        ret = SR_LoadSCI_ignored_areas(f, 1);
+
+        fclose(f);
+
+        if (ret) return ret;
+    }
+
+    f = fopen(data_areas, "rt");
+    if (f != NULL)
+    {
+        fprintf(stderr, "\tLoading %s...\n", data_areas);
+
+        ret = SR_LoadSCI_ignored_areas(f, -1);
 
         fclose(f);
 

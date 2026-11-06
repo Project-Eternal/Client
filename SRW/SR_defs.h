@@ -44,7 +44,7 @@
 #define OUT_LLASM 7
 #define OUT_X64 8
 
-#define OUTPUT_TYPE  OUT_X86
+#define OUTPUT_TYPE  OUT_LLASM
 
 #if (OUTPUT_TYPE == OUT_LLASM)
     #define EMULATE_FPU 1
@@ -77,7 +77,8 @@ typedef enum _output_type_ {
     OT_UNKNOWN     =  0,
     OT_OFFSET      =  1,
     OT_INSTRUCTION =  2,
-    OT_NONE        =  3         // used for label at section end
+    OT_NONE        =  3,        // used for label at section end
+    OT_DATA        =  4         // data in a code section: not decoded, written as bytes (see data_areas.sci)
 } output_type;
 
 typedef enum _section_type_ {
@@ -142,6 +143,11 @@ typedef struct _bound_data_ {
 typedef struct _region_data_ {
     uint_fast32_t begin_ofs;    // region begin offset
     uint_fast32_t end_ofs;      // region end offset
+    uint_fast32_t flags_to_write; // flags required at the end of the region by the following region and by the regions it jumps to
+    uint_fast32_t flags_translated; // flags_to_write the region was last translated with
+    uint_fast32_t flags_start;    // flags the region needs at its beginning
+    uint_fast32_t flags_start_jump; // flags a jump to the beginning of the region has to provide: flags_start plus what an instruction flags entry
+                                    // (two conditional jumps in a row) takes from the preceding jump's region instead
 } region_data;
 
 typedef struct _export_data_ {

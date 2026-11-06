@@ -32,6 +32,7 @@
     #define _USE_MATH_DEFINES
 #endif
 #include <math.h>
+#include <string.h>
 
 #if defined(__SSE2__)
     #include <emmintrin.h>
@@ -136,15 +137,19 @@ const static double const_ln2 = M_LN2;
 
 #define CLEAR_X87_FLAG(x) { st_sw_cond &= (~(x)) & X87_CX; }
 
-#define CLEAR_X87_FLAGS { st_sw_cond = 0; }
+/* loads, stores and arithmetic change only C1: C3, C2 and C0 keep the result of an earlier compare (compiled code reads them
+   with fnstsw after an fst, e.g. 0x76d08c: fcom, fst, fnstsw) */
+#define CLEAR_X87_FLAGS CLEAR_X87_FLAG(X87_C1)
 
 #define X87_CMP(x, y)  { \
     if ( (x) < (y) ) { \
         st_sw_cond = X87_CF; \
     } else if ( (x) == (y) ) { \
         st_sw_cond = X87_ZF; \
-    } else { \
+    } else if ( (x) > (y) ) { \
         st_sw_cond = 0; \
+    } else { \
+        st_sw_cond = X87_ZF | X87_C2 | X87_CF; /* unordered (a NaN): C3, C2 and C0 */ \
     } \
 }
 
@@ -166,8 +171,11 @@ EXTERNC void CCALL x87_fabs_void(CPU)
     CLEAR_X87_FLAGS;
 }
 
-EXTERNC void CCALL x87_fadd_float(CPU, float_int num)
+EXTERNC void CCALL x87_fadd_float(CPU, uint32_t num_bits)
 {
+    float_int num;
+
+    num.i = (int32_t) num_bits;
     ST0 += num.f;
     CLEAR_X87_FLAGS;
 }
@@ -206,8 +214,11 @@ EXTERNC void CCALL x87_fchs_void(CPU)
     CLEAR_X87_FLAGS;
 }
 
-EXTERNC void CCALL x87_fcom_float(CPU, float_int num)
+EXTERNC void CCALL x87_fcom_float(CPU, uint32_t num_bits)
 {
+    float_int num;
+
+    num.i = (int32_t) num_bits;
     X87_CMP(ST0, num.f)
 }
 
@@ -220,8 +231,11 @@ EXTERNC void CCALL x87_fcom_double(CPU, uint32_t num_low, uint32_t num_high)
     X87_CMP(ST0, num.d)
 }
 
-EXTERNC void CCALL x87_fcomp_float(CPU, float_int num)
+EXTERNC void CCALL x87_fcomp_float(CPU, uint32_t num_bits)
 {
+    float_int num;
+
+    num.i = (int32_t) num_bits;
     X87_CMP(ST0, num.f)
     POP_REGS;
 }
@@ -242,8 +256,11 @@ EXTERNC void CCALL x87_fcos_void(CPU)
     CLEAR_X87_FLAGS;
 }
 
-EXTERNC void CCALL x87_fdiv_float(CPU, float_int num)
+EXTERNC void CCALL x87_fdiv_float(CPU, uint32_t num_bits)
 {
+    float_int num;
+
+    num.i = (int32_t) num_bits;
     ST0 /= num.f;
     CLEAR_X87_FLAGS;
 }
@@ -276,8 +293,11 @@ EXTERNC void CCALL x87_fdivp_st(CPU, int num)
     POP_REGS;
 }
 
-EXTERNC void CCALL x87_fdivr_float(CPU, float_int num)
+EXTERNC void CCALL x87_fdivr_float(CPU, uint32_t num_bits)
 {
+    float_int num;
+
+    num.i = (int32_t) num_bits;
     ST0 = num.f / ST0;
     CLEAR_X87_FLAGS;
 }
@@ -562,8 +582,11 @@ EXTERNC void CCALL x87_fisubr_int32(CPU, int32_t num)
     CLEAR_X87_FLAGS;
 }
 
-EXTERNC void CCALL x87_fld_float(CPU, float_int num)
+EXTERNC void CCALL x87_fld_float(CPU, uint32_t num_bits)
 {
+    float_int num;
+
+    num.i = (int32_t) num_bits;
     PUSH_REGS;
     ST0 = num.f;
 }
@@ -616,8 +639,11 @@ EXTERNC void CCALL x87_fldcw_uint16(CPU, uint32_t new_cw)
     st_cw = new_cw & 0xffff;
 }
 
-EXTERNC void CCALL x87_fmul_float(CPU, float_int num)
+EXTERNC void CCALL x87_fmul_float(CPU, uint32_t num_bits)
 {
+    float_int num;
+
+    num.i = (int32_t) num_bits;
     ST0 *= num.f;
     CLEAR_X87_FLAGS;
 }
@@ -827,8 +853,11 @@ EXTERNC uint32_t CCALL x87_fnstsw_void(CPU)
     return st_sw_cond | (st_top << 11);
 }
 
-EXTERNC void CCALL x87_fsub_float(CPU, float_int num)
+EXTERNC void CCALL x87_fsub_float(CPU, uint32_t num_bits)
 {
+    float_int num;
+
+    num.i = (int32_t) num_bits;
     ST0 -= num.f;
     CLEAR_X87_FLAGS;
 }
@@ -861,8 +890,11 @@ EXTERNC void CCALL x87_fsubp_st(CPU, int num)
     POP_REGS;
 }
 
-EXTERNC void CCALL x87_fsubr_float(CPU, float_int num)
+EXTERNC void CCALL x87_fsubr_float(CPU, uint32_t num_bits)
 {
+    float_int num;
+
+    num.i = (int32_t) num_bits;
     ST0 = num.f - ST0;
     CLEAR_X87_FLAGS;
 }
@@ -1131,5 +1163,331 @@ EXTERNC uint32_t CCALL x87_ftol_int64(CPU)
     st_result = ((orig < 9223372036854775808.0) && (orig > -9223372036854775808.0))?((int64_t) trunc(orig)):INT64_C(0x8000000000000000);
     return PTR2REG(&(st_result));
 #endif
+}
+
+
+
+// ---------------------------------------------------------------------
+// instructions used by the 32-bit Windows C runtime
+// the emulated registers are doubles, so 80-bit values lose precision
+
+const static double const_pi = M_PI;
+const static double const_l2e = M_LOG2E;
+const static double const_l2t = 3.32192809488736234787; // log2(10)
+
+static double x87_tword_to_double(const uint8_t *p)
+{
+    uint64_t mant;
+    uint32_t sign_exp;
+    int exp;
+    double result;
+    int i;
+
+    mant = 0;
+    for (i = 7; i >= 0; i--)
+    {
+        mant = (mant << 8) | p[i];
+    }
+    sign_exp = p[8] | ((uint32_t)p[9] << 8);
+    exp = sign_exp & 0x7fff;
+
+    if (exp == 0x7fff)
+    {
+        result = ((mant << 1) == 0) ? INFINITY : NAN;
+    }
+    else if (mant == 0)
+    {
+        result = 0.0;
+    }
+    else
+    {
+        // the 64-bit mantissa has its integer bit explicit
+        result = ldexp((double)mant, ((exp == 0) ? 1 : exp) - 16383 - 63);
+    }
+
+    return (sign_exp & 0x8000) ? -result : result;
+}
+
+static void x87_double_to_tword(double value, uint8_t *p)
+{
+    double_int v;
+    uint64_t mant;
+    uint32_t sign_exp;
+    int exp, biased;
+    int i;
+
+    v.d = value;
+    {
+        uint64_t bits;
+
+        bits = ((uint64_t)v.high << 32) | v.low;
+        sign_exp = (uint32_t)(bits >> 63) << 15;
+        biased = (int)((bits >> 52) & 0x7ff);
+        bits &= UINT64_C(0xfffffffffffff);
+
+        if (biased == 0x7ff)
+        {
+            exp = 0x7fff;
+            mant = UINT64_C(0x8000000000000000) | (bits << 11);
+        }
+        else if (biased == 0)
+        {
+            if (bits == 0)
+            {
+                exp = 0;
+                mant = 0;
+            }
+            else
+            {
+                // denormal double: normalize
+                int shift;
+
+                shift = 0;
+                while (!(bits & UINT64_C(0x8000000000000000)))
+                {
+                    bits <<= 1;
+                    shift++;
+                }
+                mant = bits;
+                exp = 15372 - shift;
+            }
+        }
+        else
+        {
+            exp = biased - 1023 + 16383;
+            mant = UINT64_C(0x8000000000000000) | (bits << 11);
+        }
+    }
+
+    sign_exp |= (uint32_t)exp;
+
+    for (i = 0; i < 8; i++)
+    {
+        p[i] = (uint8_t)(mant >> (8 * i));
+    }
+    p[8] = (uint8_t)sign_exp;
+    p[9] = (uint8_t)(sign_exp >> 8);
+}
+
+static uint32_t x87_read_le16(const uint8_t *p)
+{
+    return p[0] | ((uint32_t)p[1] << 8);
+}
+
+static void x87_write_le32(uint8_t *p, uint32_t value)
+{
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
+    p[2] = (uint8_t)(value >> 16);
+    p[3] = (uint8_t)(value >> 24);
+}
+
+EXTERNC void CCALL x87_fldpi_void(CPU)
+{
+    PUSH_REGS;
+    ST0 = const_pi;
+}
+
+EXTERNC void CCALL x87_fldl2e_void(CPU)
+{
+    PUSH_REGS;
+    ST0 = const_l2e;
+}
+
+EXTERNC void CCALL x87_fldl2t_void(CPU)
+{
+    PUSH_REGS;
+    ST0 = const_l2t;
+}
+
+// 80-bit extended real in memory, address in a register
+EXTERNC void CCALL x87_fld_tword(CPU, uint32_t address)
+{
+    double value;
+
+    value = x87_tword_to_double((const uint8_t *)REG2PTR(address));
+    PUSH_REGS;
+    ST0 = value;
+}
+
+EXTERNC void CCALL x87_fstp_tword(CPU, uint32_t address)
+{
+    x87_double_to_tword(ST0, (uint8_t *)REG2PTR(address));
+    POP_REGS;
+}
+
+// st(num) = st0 - st(num)
+EXTERNC void CCALL x87_fsubr_to_st(CPU, int num)
+{
+    ST(num) = ST0 - ST(num);
+    CLEAR_X87_FLAGS;
+}
+
+// st(num) = st0 / st(num)
+EXTERNC void CCALL x87_fdivr_to_st(CPU, int num)
+{
+    ST(num) = ST0 / ST(num);
+    CLEAR_X87_FLAGS;
+}
+
+// 2^st0 - 1
+EXTERNC void CCALL x87_f2xm1_void(CPU)
+{
+    ST0 = expm1(ST0 * M_LN2);
+    CLEAR_X87_FLAGS;
+}
+
+// st1 = atan2(st1, st0), pop
+EXTERNC void CCALL x87_fpatan_void(CPU)
+{
+    ST1 = atan2(ST1, ST0);
+    POP_REGS;
+}
+
+// partial remainder, truncated quotient; the emulation always completes in one step (C2 = 0)
+static void x87_fprem_common(CPU, int nearest)
+{
+    double x, y, quotient;
+    uint32_t q;
+
+    x = ST0;
+    y = ST1;
+
+    if (nearest)
+    {
+        ST0 = remainder(x, y);
+        quotient = nearbyint(x / y);
+    }
+    else
+    {
+        ST0 = fmod(x, y);
+        quotient = trunc(x / y);
+    }
+
+    q = (quotient == quotient && fabs(quotient) < 4294967296.0) ? (uint32_t)fabs(quotient) : 0;
+
+    st_sw_cond = 0;
+    if (q & 1) st_sw_cond |= X87_C1;
+    if (q & 2) st_sw_cond |= X87_C3;
+    if (q & 4) st_sw_cond |= X87_C0;
+}
+
+EXTERNC void CCALL x87_fprem_void(CPU)
+{
+    x87_fprem_common(cpu, 0);
+}
+
+EXTERNC void CCALL x87_fprem1_void(CPU)
+{
+    x87_fprem_common(cpu, 1);
+}
+
+// round to integer according to the rounding control field
+EXTERNC void CCALL x87_frndint_void(CPU)
+{
+    switch ((st_cw >> X87_RC_SHIFT) & 3)
+    {
+    case 0: // Round to nearest (even)
+        ST0 = nearbyint(ST0);
+        break;
+    case 1: // Round down (toward -infinity)
+        ST0 = floor(ST0);
+        break;
+    case 2: // Round up (toward +infinity)
+        ST0 = ceil(ST0);
+        break;
+    default: // Round toward zero (Truncate)
+        ST0 = trunc(ST0);
+        break;
+    }
+    CLEAR_X87_FLAGS;
+}
+
+// st0 = st0 * 2^trunc(st1)
+EXTERNC void CCALL x87_fscale_void(CPU)
+{
+    double scale;
+    int exponent;
+
+    scale = trunc(ST1);
+    exponent = (scale > 100000.0) ? 100000 : ((scale < -100000.0) ? -100000 : (int)scale);
+    ST0 = ldexp(ST0, exponent);
+    CLEAR_X87_FLAGS;
+}
+
+// st0 = sin(st0), then push cos
+EXTERNC void CCALL x87_fsincos_void(CPU)
+{
+    double value;
+
+    value = ST0;
+    ST0 = sin(value);
+    PUSH_REGS;
+    ST0 = cos(value);
+    CLEAR_X87_FLAGS;
+}
+
+// classify st0 in the condition bits (an empty register cannot be told from a value here)
+EXTERNC void CCALL x87_fxam_void(CPU)
+{
+    double value;
+    uint32_t cond;
+
+    value = ST0;
+
+    switch (fpclassify(value))
+    {
+    case FP_NAN:
+        cond = X87_C0;
+        break;
+    case FP_INFINITE:
+        cond = X87_C2 | X87_C0;
+        break;
+    case FP_ZERO:
+        cond = X87_C3;
+        break;
+    case FP_SUBNORMAL:
+        cond = X87_C3 | X87_C2;
+        break;
+    default:
+        cond = X87_C2;
+        break;
+    }
+    if (signbit(value)) cond |= X87_C1;
+
+    st_sw_cond = cond;
+}
+
+// environment: 28 bytes (protected mode, 32-bit operand size)
+#define X87_ENV_SIZE 28
+#define X87_REG_AREA X87_ENV_SIZE
+
+static void x87_store_env(CPU, uint8_t *p)
+{
+    memset(p, 0, X87_ENV_SIZE);
+    x87_write_le32(p, st_cw & 0xffff);
+    x87_write_le32(p + 4, (st_sw_cond | (st_top << 11)) & 0xffff);
+    x87_write_le32(p + 8, 0xffff); // tag word: every register empty
+}
+
+static void x87_load_env(CPU, const uint8_t *p)
+{
+    uint32_t sw;
+
+    st_cw = x87_read_le16(p);
+    sw = x87_read_le16(p + 4);
+    st_sw_cond = sw & X87_CX;
+    st_top = (sw >> 11) & 7;
+}
+
+EXTERNC void CCALL x87_fnstenv_void(CPU, uint32_t address)
+{
+    x87_store_env(cpu, (uint8_t *)REG2PTR(address));
+    st_cw |= 0x3f; // the instruction masks all exceptions
+}
+
+EXTERNC void CCALL x87_fldenv_void(CPU, uint32_t address)
+{
+    x87_load_env(cpu, (const uint8_t *)REG2PTR(address));
 }
 

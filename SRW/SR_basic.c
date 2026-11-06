@@ -477,18 +477,27 @@ int SR_apply_fixup_info(void)
     Entry_FILE EF;
     int fout_opened;
 
-#if (OUTPUT_TYPE == OUT_ORIG || OUTPUT_TYPE == OUT_WINDOWS)
-    output_data *output;
-
-    output = section_output_list_FindEntryEqual(EIPObjectNum, EIP);
-    if (output != NULL)
     {
-        output->has_label = 1;
-    }
+        output_data *output;
 
-    // insert program entry point into list of entries
-    section_entry_list_Insert(EIPObjectNum, EIP);
+        output = section_output_list_FindEntryEqual(EIPObjectNum, EIP);
+        if (output != NULL)
+        {
+            output->has_label = 1;
+        }
+
+        // insert program entry point into list of entries
+        section_entry_list_Insert(EIPObjectNum, EIP);
+
+#if (OUTPUT_TYPE != OUT_ORIG && OUTPUT_TYPE != OUT_WINDOWS)
+        {
+            bound_data *bound;
+
+            bound = section_bound_list_Insert(EIPObjectNum, EIP);
+            if (bound != NULL) bound->begin = 1;
+        }
 #endif
+    }
 
     for (EF.Entry = 0; EF.Entry < num_sections; EF.Entry++)
     {

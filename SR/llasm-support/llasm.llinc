@@ -54,6 +54,7 @@ include llasm_int.llinc
 include llasm_movmem.llinc
 include llasm_movs.llinc
 include llasm_pushx.llinc
+include llasm_sse.llinc
 include llasm_scas.llinc
 include llasm_stos.llinc
 include llasm_xti.llinc

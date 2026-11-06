@@ -25,10 +25,57 @@
 func x86_repe_cmpsb $
 func x86_repne_cmpsb $
 
+func x86_repe_cmpsw $
+func x86_repne_cmpsw $
+func x86_repe_cmpsd $
+func x86_repne_cmpsd $
+func x86_cmps_second $
+
+func x86_cmpxchg32 $, address, expected, desired
+func x86_xadd32 $, address, value
+func x86_lock_rmw $, address, op, size, value
+func x86_cmpxchg8b $, address
+
 macro REPE_CMPSB
     call x86_repe_cmpsb $
 endm
 
 macro REPNE_CMPSB
     call x86_repne_cmpsb $
+endm
+
+macro REPE_CMPSW
+    call x86_repe_cmpsw $
+endm
+
+macro REPNE_CMPSW
+    call x86_repne_cmpsw $
+endm
+
+macro REPE_CMPSD
+    call x86_repe_cmpsd $
+endm
+
+macro REPNE_CMPSD
+    call x86_repne_cmpsd $
+endm
+
+macro CMPS_SECOND
+    call x86_cmps_second $
+endm
+
+macro CMPXCHG32 address, expected, desired
+    call x86_cmpxchg32 $, \address, \expected, \desired
+endm
+
+macro XADD32 address, value
+    call x86_xadd32 $, \address, \value
+endm
+
+macro LOCK_RMW address, op, size, value
+    call x86_lock_rmw $, \address, \op, \size, \value
+endm
+
+macro CMPXCHG8B address
+    call x86_cmpxchg8b $, \address
 endm

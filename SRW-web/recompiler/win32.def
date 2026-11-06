@@ -1,0 +1,568 @@
+AddAccessAllowedAce advapi32 4 p i i p
+AddAccessDeniedAce advapi32 4 p i i p
+AllocateAndInitializeSid advapi32 11 p i i i i i i i i i p
+FreeSid advapi32 1 p
+GetTokenInformation advapi32 5 i i p i p
+GetUserNameA advapi32 2 p p
+InitializeAcl advapi32 3 p i i
+OpenProcessToken advapi32 3 i i p
+RegCloseKey advapi32 1 i
+RegCreateKeyExA advapi32 9 i s i p i i p p p
+RegDeleteKeyA advapi32 2 i s
+RegDeleteValueA advapi32 2 i s
+RegEnumKeyExA advapi32 8 i i p p p p p p
+RegFlushKey advapi32 1 i
+RegOpenKeyA advapi32 3 i s p
+RegOpenKeyExA advapi32 5 i s i i p
+RegQueryInfoKeyA advapi32 12 i p p p p p p p p p p p
+RegQueryValueExA advapi32 6 i s p p p p
+RegSetValueExA advapi32 6 i s i i p i
+SetSecurityInfo advapi32 7 i i i p p p p
+ImageList_Add comctl32 3 p i i
+ImageList_BeginDrag comctl32 4 p i i i
+ImageList_Create comctl32 5 i i i i i
+ImageList_Destroy comctl32 1 p
+ImageList_DragEnter comctl32 3 i i i
+ImageList_DragLeave comctl32 1 i
+ImageList_DragMove comctl32 2 i i
+ImageList_DragShowNolock comctl32 1 i
+ImageList_EndDrag comctl32 0 
+ImageList_GetImageCount comctl32 1 p
+ImageList_Replace comctl32 4 p i i i
+InitCommonControlsEx comctl32 1 p
+_TrackMouseEvent comctl32 1 p
+BitBlt gdi32 9 i i i i i i i i i
+ChoosePixelFormat gdi32 2 i p
+CombineRgn gdi32 4 i i i i
+CreateCompatibleDC gdi32 1 i
+CreateDIBSection gdi32 6 i p i p i i
+CreateDIBitmap gdi32 6 i p i p p i
+CreateFontIndirectA gdi32 1 p
+CreatePen gdi32 3 i i i
+CreateRectRgn gdi32 4 i i i i
+CreateRectRgnIndirect gdi32 1 p
+CreateSolidBrush gdi32 1 i
+DeleteDC gdi32 1 i
+DeleteObject gdi32 1 i
+DescribePixelFormat gdi32 4 i i i p
+FillRgn gdi32 3 i i i
+GdiFlush gdi32 0 
+GetBkColor gdi32 1 i
+GetDeviceGammaRamp gdi32 2 i p
+GetObjectA gdi32 3 i i p
+GetPixelFormat gdi32 1 i
+GetStockObject gdi32 1 i
+GetTextExtentPoint32A gdi32 4 i s i p
+LineTo gdi32 3 i i i
+MoveToEx gdi32 4 i i i p
+OffsetViewportOrgEx gdi32 4 i i i p
+SelectClipRgn gdi32 2 i i
+SelectObject gdi32 2 i i
+SetBkColor gdi32 2 i i
+SetBkMode gdi32 2 i i
+SetDeviceGammaRamp gdi32 2 i p
+SetMapMode gdi32 2 i i
+SetPixel gdi32 4 i i i i
+SetPixelFormat gdi32 3 i i p
+SetTextColor gdi32 2 i i
+SetViewportOrgEx gdi32 4 i i i p
+TextOutA gdi32 5 i i i s i
+ImmAssociateContext imm32 2 i i
+ImmAssociateContextEx imm32 3 i i i
+ImmGetCandidateListA imm32 4 i i p i
+ImmGetCompositionStringA imm32 4 i i p i
+ImmGetContext imm32 1 i
+ImmGetConversionStatus imm32 3 i p p
+ImmNotifyIME imm32 4 i i i i
+ImmReleaseContext imm32 2 i i
+ImmSetConversionStatus imm32 3 i i i
+Beep kernel32 2 i i
+CloseHandle kernel32 1 i
+CompareFileTime kernel32 2 p p
+CompareStringA kernel32 6 i i s i s i
+CreateDirectoryA kernel32 2 s p
+CreateEventA kernel32 4 p i i s
+CreateFileA kernel32 7 s i i p i i i
+CreateFileMappingA kernel32 6 i p i i i s
+CreateIoCompletionPort kernel32 4 i i i i
+CreateMutexA kernel32 3 p i s
+CreateSemaphoreA kernel32 4 p i i s
+CreateThread kernel32 6 p i p i i p
+DeleteCriticalSection kernel32 1 p
+DeleteFileA kernel32 1 s
+DuplicateHandle kernel32 7 i i i p i i i
+EnterCriticalSection kernel32 1 p
+EnumSystemLocalesA kernel32 2 p i
+ExitProcess kernel32 1 i
+FatalAppExitA kernel32 2 i s
+FileTimeToLocalFileTime kernel32 2 p p
+FileTimeToSystemTime kernel32 2 p p
+FindClose kernel32 1 i
+FindFirstFileA kernel32 2 s p
+FindNextFileA kernel32 2 i p
+FindResourceA kernel32 3 i s s
+FlushFileBuffers kernel32 1 i
+FlushInstructionCache kernel32 3 i i i
+FormatMessageA kernel32 7 i p i i p i p
+FreeEnvironmentStringsA kernel32 1 p
+FreeLibrary kernel32 1 i
+FreeResource kernel32 1 i
+GetACP kernel32 0 
+GetCommandLineA kernel32 0 
+GetComputerNameA kernel32 2 p p
+GetCurrentDirectoryA kernel32 2 i p
+GetCurrentProcess kernel32 0 
+GetCurrentProcessId kernel32 0 
+GetCurrentThread kernel32 0 
+GetCurrentThreadId kernel32 0 
+GetDiskFreeSpaceA kernel32 5 s p p p p
+GetDriveTypeA kernel32 1 s
+GetEnvironmentStrings kernel32 0 
+GetEnvironmentVariableA kernel32 3 s p i
+GetExitCodeProcess kernel32 2 i p
+GetFileAttributesA kernel32 1 s
+GetFileInformationByHandle kernel32 2 i p
+GetFileSize kernel32 2 i p
+GetFileTime kernel32 4 i p p p
+GetFileType kernel32 1 i
+GetFullPathNameA kernel32 4 s i p p
+GetLastError kernel32 0 
+GetLocalTime kernel32 1 p
+GetLocaleInfoA kernel32 4 i i p i
+GetModuleFileNameA kernel32 3 i p i
+GetModuleHandleA kernel32 1 s
+GetOEMCP kernel32 0 
+GetProcessHeap kernel32 0 
+GetQueuedCompletionStatus kernel32 5 i p p p i
+GetStartupInfoA kernel32 1 p
+GetStdHandle kernel32 1 i
+GetStringTypeA kernel32 5 i i s i p
+GetSystemDirectoryA kernel32 2 p i
+GetSystemInfo kernel32 1 p
+GetSystemTime kernel32 1 p
+GetTempPathA kernel32 2 i p
+GetThreadPriority kernel32 1 i
+GetTickCount kernel32 0 
+GetTimeZoneInformation kernel32 1 p
+GetUserDefaultLCID kernel32 0 
+GetVersion kernel32 0 
+GetVersionExA kernel32 1 p
+GetVolumeInformationA kernel32 8 s p i p p p p i
+GetWindowsDirectoryA kernel32 2 p i
+GlobalAlloc kernel32 2 i i
+GlobalFree kernel32 1 i
+GlobalLock kernel32 1 i
+GlobalMemoryStatus kernel32 1 p
+GlobalUnlock kernel32 1 i
+HeapAlloc kernel32 3 i i i
+HeapCreate kernel32 3 i i i
+HeapDestroy kernel32 1 i
+HeapFree kernel32 3 i i p
+HeapReAlloc kernel32 4 i i p i
+HeapSize kernel32 3 i i p
+InitializeCriticalSection kernel32 1 p
+InterlockedCompareExchange kernel32 3 p i i
+InterlockedDecrement kernel32 1 p
+InterlockedExchange kernel32 2 p i
+InterlockedIncrement kernel32 1 p
+IsBadCodePtr kernel32 1 p
+IsBadReadPtr kernel32 2 p i
+IsBadWritePtr kernel32 2 p i
+IsProcessorFeaturePresent kernel32 1 i
+IsValidLocale kernel32 2 i i
+LCMapStringA kernel32 6 i i s i p i
+LeaveCriticalSection kernel32 1 p
+LoadLibraryA kernel32 1 s
+LoadResource kernel32 2 i i
+LocalFree kernel32 1 i
+LockResource kernel32 1 i
+MapViewOfFile kernel32 5 i i i i i
+MulDiv kernel32 3 i i i
+OpenMutexA kernel32 3 i i s
+OutputDebugStringA kernel32 1 s
+PeekNamedPipe kernel32 6 i p i p p p
+PostQueuedCompletionStatus kernel32 4 i i p p
+QueryPerformanceCounter kernel32 1 p
+QueryPerformanceFrequency kernel32 1 p
+RaiseException kernel32 4 i i i p
+ReadFile kernel32 5 i p i p p
+ReleaseMutex kernel32 1 i
+ReleaseSemaphore kernel32 3 i i p
+ResetEvent kernel32 1 i
+ResumeThread kernel32 1 i
+RtlUnwind kernel32 4 p p p i
+SetConsoleCtrlHandler kernel32 2 p i
+SetCurrentDirectoryA kernel32 1 s
+SetEndOfFile kernel32 1 i
+SetEnvironmentVariableA kernel32 2 s s
+SetEvent kernel32 1 i
+SetFilePointer kernel32 4 i i p i
+SetFileTime kernel32 4 i p p p
+SetHandleCount kernel32 1 i
+SetLastError kernel32 1 i
+SetStdHandle kernel32 2 i i
+SetThreadAffinityMask kernel32 2 i i
+SetThreadPriority kernel32 2 i i
+SetUnhandledExceptionFilter kernel32 1 p
+SizeofResource kernel32 2 i i
+Sleep kernel32 1 i
+SuspendThread kernel32 1 i
+SystemTimeToFileTime kernel32 2 p p
+TerminateProcess kernel32 2 i i
+TerminateThread kernel32 2 i i
+TlsAlloc kernel32 0 
+TlsFree kernel32 1 i
+TlsGetValue kernel32 1 i
+TlsSetValue kernel32 2 i p
+UnhandledExceptionFilter kernel32 1 p
+UnmapViewOfFile kernel32 1 p
+VirtualAlloc kernel32 4 p i i i
+VirtualFree kernel32 3 p i i
+VirtualProtect kernel32 4 p i i p
+VirtualQuery kernel32 3 p p i
+WaitForMultipleObjects kernel32 4 i p i i
+WaitForSingleObject kernel32 2 i i
+WriteFile kernel32 5 i p i p p
+lstrcpynA kernel32 3 p s i
+glAlphaFunc opengl32 2 i f
+glBindTexture opengl32 2 i i
+glBlendFunc opengl32 2 i i
+glClear opengl32 1 i
+glClearColor opengl32 4 f f f f
+glClipPlane opengl32 2 i p
+glColor4fv opengl32 1 p
+glColorMask opengl32 4 i i i i
+glColorMaterial opengl32 2 i i
+glColorPointer opengl32 4 i i i p
+glCopyTexImage2D opengl32 8 i i i i i i i i
+glCopyTexSubImage2D opengl32 8 i i i i i i i i
+glCullFace opengl32 1 i
+glDeleteTextures opengl32 2 i p
+glDepthFunc opengl32 1 i
+glDepthMask opengl32 1 i
+glDepthRange opengl32 4 d d
+glDisable opengl32 1 i
+glDisableClientState opengl32 1 i
+glDrawArrays opengl32 3 i i i
+glDrawElements opengl32 4 i i i p
+glEnable opengl32 1 i
+glEnableClientState opengl32 1 i
+glFinish opengl32 0 
+glFogf opengl32 2 i f
+glFogfv opengl32 2 i p
+glFogi opengl32 2 i i
+glGenTextures opengl32 2 i p
+glGetError opengl32 0 
+glGetFloatv opengl32 2 i p
+glGetIntegerv opengl32 2 i p
+glGetString opengl32 1 i
+glHint opengl32 2 i i
+glLightModelfv opengl32 2 i p
+glLightModeli opengl32 2 i i
+glLightf opengl32 3 i i f
+glLightfv opengl32 3 i i p
+glLineWidth opengl32 1 f
+glLoadIdentity opengl32 0 
+glLoadMatrixf opengl32 1 p
+glMaterialf opengl32 3 i i f
+glMaterialfv opengl32 3 i i p
+glMatrixMode opengl32 1 i
+glNormalPointer opengl32 3 i i p
+glPixelStorei opengl32 2 i i
+glPointSize opengl32 1 f
+glPolygonMode opengl32 2 i i
+glPolygonOffset opengl32 2 f f
+glReadPixels opengl32 7 i i i i i i p
+glScissor opengl32 4 i i i i
+glTexCoordPointer opengl32 4 i i i p
+glTexEnvf opengl32 3 i i f
+glTexEnvfv opengl32 3 i i p
+glTexEnvi opengl32 3 i i i
+glTexEnviv opengl32 3 i i p
+glTexGenfv opengl32 3 i i p
+glTexGeni opengl32 3 i i i
+glTexImage2D opengl32 9 i i i i i i i i p
+glTexParameteri opengl32 3 i i i
+glTexSubImage2D opengl32 9 i i i i i i i i p
+glVertexPointer opengl32 4 i i i p
+glViewport opengl32 4 i i i i
+wglCreateContext opengl32 1 i
+wglDeleteContext opengl32 1 i
+wglGetCurrentContext opengl32 0 
+wglGetCurrentDC opengl32 0 
+wglGetProcAddress opengl32 1 s
+wglMakeCurrent opengl32 2 i i
+wglSwapLayerBuffers opengl32 2 i i
+FindExecutableA shell32 3 s s p
+ShellExecuteA shell32 6 i s s s s i
+AdjustWindowRectEx user32 4 p i i i
+BeginPaint user32 2 i p
+BringWindowToTop user32 1 i
+ChangeDisplaySettingsExA user32 5 s p i i p
+ClientToScreen user32 2 i p
+ClipCursor user32 1 p
+CloseClipboard user32 0 
+CreateAcceleratorTableA user32 2 p i
+CreateDialogIndirectParamA user32 5 i p i p i
+CreateMenu user32 0 
+CreatePopupMenu user32 0 
+CreateWindowExA user32 12 i s s i i i i i i i i p
+DefWindowProcA user32 4 i i i i
+DeleteMenu user32 3 i i i
+DestroyAcceleratorTable user32 1 i
+DestroyIcon user32 1 i
+DestroyMenu user32 1 i
+DestroyWindow user32 1 i
+DispatchMessageA user32 1 p
+DrawIconEx user32 9 i i i i i i i i i
+DrawMenuBar user32 1 i
+DrawTextA user32 5 i s i p i
+EmptyClipboard user32 0 
+EndPaint user32 2 i p
+EnumDisplayDevicesA user32 4 s i p i
+EnumDisplaySettingsA user32 3 s i p
+FillRect user32 3 i p i
+FrameRect user32 3 i p i
+GetActiveWindow user32 0 
+GetAsyncKeyState user32 1 i
+GetClassLongA user32 2 i i
+GetClientRect user32 2 i i
+GetCursorPos user32 1 p
+GetDC user32 1 i
+GetFocus user32 0 
+GetForegroundWindow user32 0 
+GetKeyState user32 1 i
+GetKeyboardLayout user32 1 i
+GetMenu user32 1 i
+GetMenuItemCount user32 1 i
+GetMenuItemInfoA user32 4 i i i p
+GetMessageA user32 4 p i i i
+GetMonitorInfoA user32 2 i p
+GetParent user32 1 i
+GetScrollInfo user32 3 i i p
+GetSysColor user32 1 i
+GetSysColorBrush user32 1 i
+GetSystemMetrics user32 1 i
+GetWindow user32 2 i i
+GetWindowInfo user32 2 i p
+GetWindowPlacement user32 2 i p
+GetWindowRect user32 2 i p
+GetWindowTextA user32 3 i p i
+GetWindowTextLengthA user32 1 i
+InsertMenuItemA user32 4 i i i p
+InvalidateRect user32 3 i p i
+InvertRect user32 2 i p
+IsDialogMessageA user32 2 i p
+IsIconic user32 1 i
+IsWindow user32 1 i
+IsWindowEnabled user32 1 i
+IsWindowVisible user32 1 i
+IsZoomed user32 1 i
+KillTimer user32 2 i i
+LoadBitmapA user32 2 i s
+LoadCursorA user32 2 i s
+LoadImageA user32 6 i s i i i i
+LoadStringA user32 4 i i p i
+MapVirtualKeyA user32 2 i i
+MapWindowPoints user32 4 i i p i
+MessageBeep user32 1 i
+MessageBoxA user32 4 i s s i
+MonitorFromRect user32 2 p i
+MoveWindow user32 6 i i i i i i
+OpenClipboard user32 1 i
+PeekMessageA user32 5 p i i i i
+PostMessageA user32 4 i i i i
+PostQuitMessage user32 1 i
+RegisterClassExA user32 1 p
+ReleaseCapture user32 0 
+ReleaseDC user32 2 i i
+ScreenToClient user32 2 i p
+SendInput user32 3 i p i
+SendMessageA user32 4 i i i i
+SetCapture user32 1 i
+SetClassLongA user32 3 i i i
+SetClipboardData user32 2 i i
+SetCursor user32 1 i
+SetCursorPos user32 2 i i
+SetFocus user32 1 i
+SetMenu user32 2 i i
+SetMenuItemInfoA user32 4 i i i p
+SetParent user32 2 i i
+SetScrollInfo user32 4 i i p i
+SetScrollPos user32 4 i i i i
+SetTimer user32 4 i i i p
+SetWindowPlacement user32 2 i p
+SetWindowPos user32 7 i i i i i i i
+SetWindowTextA user32 2 i s
+ShowCursor user32 1 i
+ShowWindow user32 2 i i
+SystemParametersInfoA user32 4 i i p i
+TrackPopupMenu user32 7 i i i i i i p
+TranslateAcceleratorA user32 3 i i p
+TranslateMessage user32 1 p
+UnregisterClassA user32 2 s i
+WaitForInputIdle user32 2 i i
+WindowFromPoint user32 2 q
+wsprintfA user32 2 s s
+HttpOpenRequestA wininet 8 p s s s s p i i
+HttpQueryInfoA wininet 5 p i p p p
+HttpSendRequestA wininet 5 p s i p i
+InternetCloseHandle wininet 1 i
+InternetConnectA wininet 8 p s i s s i i i
+InternetCrackUrlA wininet 4 s i i p
+InternetOpenA wininet 5 s i s s i
+InternetReadFileExA wininet 4 p p i i
+InternetSetOptionA wininet 4 p i p i
+InternetSetStatusCallback wininet 2 p p
+joyGetDevCapsA winmm 3 i p i
+joyGetNumDevs winmm 0 
+joyGetPosEx winmm 2 i p
+WSACleanup wsock32 0 
+WSAGetLastError wsock32 0 
+WSAStartup wsock32 2 i p
+__WSAFDIsSet wsock32 2 i p
+accept wsock32 3 i p p
+bind wsock32 3 i p i
+closesocket wsock32 1 i
+connect wsock32 3 i p i
+gethostbyname wsock32 1 s
+gethostname wsock32 2 p i
+getpeername wsock32 3 i p p
+getsockname wsock32 3 i p p
+getsockopt wsock32 5 i i i p p
+htons wsock32 1 i
+inet_addr wsock32 1 s
+inet_ntoa wsock32 1 p
+ioctlsocket wsock32 3 i i p
+listen wsock32 2 i i
+ntohl wsock32 1 i
+ntohs wsock32 1 i
+recv wsock32 4 i p i i
+recvfrom wsock32 6 i p i i p p
+select wsock32 5 i p p p p
+send wsock32 4 i p i i
+sendto wsock32 6 i p i i p i
+setsockopt wsock32 5 i i i p i
+socket wsock32 3 i i i
+GetConsoleOutputCP kernel32 0 
+OpenFile kernel32 3 s p i
+DeviceIoControl kernel32 8 i i p i p i p p
+OpenFileMappingA kernel32 3 i i s
+WriteConsoleA kernel32 5 i p i p p
+WaitForMultipleObjectsEx kernel32 5 i p i i i
+WriteFileEx kernel32 5 i p i p p
+ReadFileEx kernel32 5 i p i p p
+GetOverlappedResult kernel32 4 i p p i
+CancelIo kernel32 1 i
+GetSystemTimeAsFileTime kernel32 1 p
+IsDebuggerPresent kernel32 0 
+ConvertThreadToFiber kernel32 1 p
+CreateFiberEx kernel32 5 i i i p p
+DeleteFiber kernel32 1 p
+GetDateFormatA kernel32 6 i i p s p i
+GetTimeFormatA kernel32 6 i i p s p i
+GetConsoleMode kernel32 2 i p
+GetConsoleCP kernel32 0 
+ExitThread kernel32 1 i
+GetCommandLineW kernel32 0 
+GlobalMemoryStatusEx kernel32 1 p
+GetPriorityClass kernel32 1 i
+SetPriorityClass kernel32 2 i i
+OpenThread kernel32 3 i i i
+GetThreadContext kernel32 2 i p
+Thread32First kernel32 2 i p
+Thread32Next kernel32 2 i p
+SwitchToFiber kernel32 1 p
+GetProcessAffinityMask kernel32 3 i p p
+SignalObjectAndWait kernel32 4 i i i i
+FindResourceExA kernel32 4 i s s i
+Module32First kernel32 2 i p
+Module32Next kernel32 2 i p
+GetFileAttributesExA kernel32 3 s i p
+MoveFileA kernel32 2 s s
+OpenEventA kernel32 3 i i s
+CreateToolhelp32Snapshot kernel32 2 i i
+WaitForSingleObjectEx kernel32 3 i i i
+CreateProcessA kernel32 10 s s p p i i p s p p
+GetDiskFreeSpaceExA kernel32 4 s p p p
+GetShortPathNameA kernel32 3 s p i
+RemoveDirectoryA kernel32 1 s
+SetFileAttributesA kernel32 2 s i
+SetProcessAffinityMask kernel32 2 i i
+GetFileVersionInfoA version 4 s i i p
+GetFileVersionInfoSizeA version 2 s p
+VerQueryValueA version 4 p s p p
+InternetSetCookieA wininet 3 s s s
+InternetSetStatusCallbackA wininet 2 p p
+WSACloseEvent ws2_32 1 i
+WSAEventSelect ws2_32 3 i i i
+WSAEnumNetworkEvents ws2_32 3 i i p
+DirectInput8Create dinput8 5 p i p p p
+VkKeyScanA user32 1 i
+DrawTextExA user32 6 i s i p i p
+CharLowerBuffA user32 2 s i
+GetDesktopWindow user32 0 
+MonitorFromPoint user32 3 q i
+MsgWaitForMultipleObjects user32 5 i p i i i
+CreateBitmap gdi32 5 i i i i p
+TranslateCharsetInfo gdi32 3 p p i
+StretchBlt gdi32 11 i i i i i i i i i i i
+Rectangle gdi32 5 i i i i i
+CryptReleaseContext advapi32 2 i i
+ConvertStringSecurityDescriptorToSecurityDescriptorW advapi32 4 w i p p
+RegEnumKeyA advapi32 4 i i p i
+CryptGenRandom advapi32 3 i i p
+CryptAcquireContextA advapi32 5 p s s i i
+waveOutPrepareHeader winmm 3 i p i
+waveInReset winmm 1 i
+waveInClose winmm 1 i
+waveInOpen winmm 6 p i p i i i
+waveInStart winmm 1 i
+waveInGetNumDevs winmm 0 
+waveOutGetNumDevs winmm 0 
+waveInGetDevCapsA winmm 3 i p i
+waveInUnprepareHeader winmm 3 i p i
+waveInPrepareHeader winmm 3 i p i
+waveInAddBuffer winmm 3 i p i
+waveOutGetPosition winmm 3 i p i
+waveOutReset winmm 1 i
+waveOutWrite winmm 3 i p i
+waveOutUnprepareHeader winmm 3 i p i
+waveOutOpen winmm 6 p i p i i i
+waveOutClose winmm 1 i
+waveOutGetDevCapsA winmm 3 i p i
+timeKillEvent winmm 1 i
+timeSetEvent winmm 5 i i p i i
+mciSendCommandA winmm 4 i i i i
+timeGetTime winmm 0 
+acmStreamSize msacm32 4 p i p i
+acmStreamPrepareHeader msacm32 3 p p i
+acmStreamConvert msacm32 3 p p i
+acmStreamUnprepareHeader msacm32 3 p p i
+acmFormatSuggest msacm32 5 p p p i i
+acmStreamOpen msacm32 8 p p p p p i i i
+SetupDiGetClassDevsA setupapi 4 p s p i
+SetupDiGetDeviceInterfaceDetailA setupapi 6 p p p i p p
+SetupDiEnumDeviceInterfaces setupapi 5 p p p i p
+SetupDiDestroyDeviceInfoList setupapi 1 p
+SetupDiGetDeviceRegistryPropertyA setupapi 7 p p i p p i p
+SetupDiEnumDeviceInfo setupapi 3 p i p
+HidD_GetSerialNumberString hid 3 p p i
+HidD_GetHidGuid hid 1 p
+HidD_SetFeature hid 3 p p i
+HidD_GetPreparsedData hid 2 p p
+HidD_GetAttributes hid 2 p p
+HidP_GetCaps hid 2 p p
+HidD_GetProductString hid 3 p p i
+HidD_FreePreparsedData hid 1 p
+PropVariantClear ole32 1 p
+CoCreateInstance ole32 5 p p i p p
+CoTaskMemFree ole32 1 p
+CoUninitialize ole32 0 
+CLSIDFromString ole32 2 w p
+CoInitialize ole32 1 p
+glFrontFace opengl32 1 i
+htonl ws2_32 1 i
+WSACreateEvent ws2_32 0 
+WSAAsyncGetHostByName ws2_32 5 i i s p i
+WSACancelAsyncRequest ws2_32 1 i

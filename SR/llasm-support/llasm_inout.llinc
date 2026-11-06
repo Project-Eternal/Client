@@ -35,6 +35,7 @@ funcv x86_out_imm_eax $, portno
 funcv x86_out_dx_al $
 funcv x86_out_dx_ax $
 funcv x86_out_dx_eax $
+funcv x86_rdtsc $
 
 
 macro IN_al_IMM portno
@@ -86,3 +87,6 @@ macro OUT_DX_eax
     call x86_out_dx_eax $
 endm
 
+macro RDTSC
+    call x86_rdtsc $
+endm

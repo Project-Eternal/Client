@@ -24,10 +24,58 @@
 
 #include <stdio.h>
 #include <malloc.h>
+#include <stdlib.h>
 #include <string.h>
 #include "SR_defs.h"
 #include "SR_vars.h"
 #include "udis86_dep.h"
+
+#define COLLECT_MAX 1024
+static struct { char what[96]; unsigned int count; } collected[COLLECT_MAX];
+static int collected_num = 0;
+
+int SR_collect_enabled(void)
+{
+    static int enabled = -1;
+
+    if (enabled < 0) enabled = (getenv("SRW_COLLECT") != NULL);
+
+    return enabled;
+}
+
+// remember an instruction SRW cannot translate (SRW_COLLECT mode), keyed by description
+void SR_collect_unsupported(const char *what)
+{
+    int i;
+
+    for (i = 0; i < collected_num; i++)
+    {
+        if (strcmp(collected[i].what, what) == 0)
+        {
+            collected[i].count++;
+            return;
+        }
+    }
+    if (collected_num < COLLECT_MAX)
+    {
+        strncpy(collected[collected_num].what, what, sizeof(collected[0].what) - 1);
+        collected[collected_num].what[sizeof(collected[0].what) - 1] = 0;
+        collected[collected_num].count = 1;
+        collected_num++;
+    }
+}
+
+int SR_collect_report(void)
+{
+    int i;
+
+    for (i = 0; i < collected_num; i++)
+    {
+        fprintf(stderr, "Unsupported: %u x %s\n", collected[i].count, collected[i].what);
+    }
+
+    return collected_num;
+}
 
 int SR_disassemble_region_llasm(unsigned int Entry, region_data *region)
 {
@@ -40,11 +88,33 @@ int SR_disassemble_region_llasm(unsigned int Entry, region_data *region)
     int *ua_ebp_area_value, *ua_esp_area_value;
     Word_t ua_ebp_area_index, ua_esp_area_index;
 
+    // A table kept in the code (a data area, its entries are offsets) behind a call that does not return is part of the region
+    // that ends there: the walk starts at the last real instruction
+    while (region->end_ofs > region->begin_ofs)
+    {
+        output = section_output_list_FindEntryEqual(Entry, region->end_ofs);
+        if (output == NULL || output->type == OT_INSTRUCTION || output->type == OT_NONE) break;
+        output = section_output_list_FindEntryEqualOrLower(Entry, region->end_ofs - 1);
+        if (output == NULL || output->ofs < region->begin_ofs) break;
+        region->end_ofs = output->ofs;
+    }
+
+    region->flags_start_jump = 0;
+
+    // nothing but data (the table starts the region: something jumps or points to it)
+    output = section_output_list_FindEntryEqual(Entry, region->end_ofs);
+    if (output != NULL && (output->type == OT_OFFSET || output->type == OT_DATA || output->type == OT_UNKNOWN))
+    {
+        region->flags_start = 0;
+        return 0;
+    }
+
     cur_ofs = region->end_ofs;
     finished = 0;
     flags_to_write = 0;
     last_instruction = 2;
-    //flags_to_write = region->flags_to_write;
+    flags_to_write = region->flags_to_write;
+    region->flags_translated = flags_to_write;
 
     orig_ebp_dword_aligned = ebp_dword_aligned;
     orig_esp_dword_aligned = esp_dword_aligned;
@@ -143,9 +213,22 @@ int SR_disassemble_region_llasm(unsigned int Entry, region_data *region)
             if (flags_read == FL_UNKNOWN ||
                 flags_write == FL_UNKNOWN)
             {
-                fprintf(stderr, "Error: unknown flags - %i - %i (0x%x) - %s\n", Entry, (unsigned int)cur_ofs, (unsigned int)(section[Entry].start + cur_ofs), output->str);
+                if (SR_collect_enabled())
+                {
+                    char what[96];
 
-                return 5;
+                    snprintf(what, sizeof(what), "flags of %s", ud_lookup_mnemonic(ud_obj.mnemonic));
+                    SR_collect_unsupported(what);
+                    // it becomes a no-op in the translation stage, so it neither reads nor writes flags
+                    if (flags_read == FL_UNKNOWN) flags_read = FL_NONE;
+                    if (flags_write == FL_UNKNOWN) flags_write = FL_NONE;
+                }
+                else
+                {
+                    fprintf(stderr, "Error: unknown flags - %i - %i (0x%x) - %s\n", Entry, (unsigned int)cur_ofs, (unsigned int)(section[Entry].start + cur_ofs), output->str);
+
+                    return 5;
+                }
             }
 
             iflags = section_iflags_list_FindEntryEqual(Entry, cur_ofs);
@@ -238,6 +321,15 @@ int SR_disassemble_region_llasm(unsigned int Entry, region_data *region)
 
             last_instruction = 0;
 
+            if ((flags_to_write & FL_INST_MASK) && (flags_read || (flags_write & ~FL_INST_MASK)) && SR_collect_enabled())
+            {
+                char what[96];
+
+                snprintf(what, sizeof(what), "unprocessed instruction flags before %.40s", output->str);
+                SR_collect_unsupported(what);
+                flags_to_write &= ~FL_INST_MASK;
+            }
+
             if ((flags_to_write & FL_INST_MASK) && (flags_read || (flags_write & ~FL_INST_MASK)))
             {
                 fprintf(stderr, "Error: unprocessed instruction flags - %i - %i (0x%x) - %s\n", Entry, (unsigned int)cur_ofs, (unsigned int)(section[Entry].start + cur_ofs), output->str);
@@ -251,12 +343,15 @@ int SR_disassemble_region_llasm(unsigned int Entry, region_data *region)
 
             if (iflags)
             {
+                // the preceding conditional jump provides these flags to the fall through; a jump to this instruction from elsewhere has to produce them
+                if (cur_ofs == region->begin_ofs) region->flags_start_jump = flags_to_write & (uint32_t) iflags->end;
                 flags_to_write &= ~((uint32_t) iflags->end);
             }
 
         }
 
 
+    next_instruction:
         if (cur_ofs == region->begin_ofs)
         {
             finished = 1;
@@ -268,6 +363,9 @@ int SR_disassemble_region_llasm(unsigned int Entry, region_data *region)
         }
     }
 
+    region->flags_start = flags_to_write;
+    region->flags_start_jump |= flags_to_write;
+
     if (flags_to_write)
     {
         if (flags_to_write & FL_WEAK)
@@ -276,31 +374,35 @@ int SR_disassemble_region_llasm(unsigned int Entry, region_data *region)
         }
         else
         {
-            // this shouldn't be needed
-            // only works if regions are processed from end to begin
-            /*if (region->begin_ofs != 0)
+            // the flags must be produced before the region, so hand them to the region that falls through into
+            // this one (regions are processed from the end, so it has not been processed yet)
+#ifndef USE_JUDY
+            if (region->begin_ofs != 0)
             {
+                region_data *prev_region;
+
                 output = section_output_list_FindEntryEqual(Entry, region->begin_ofs);
-                if (output != NULL)
+                prev_region = section_region_list_FindEntryLower(Entry, region->begin_ofs);
+                if (output != NULL && prev_region != NULL)
                 {
-                    if (!output->has_label)
+                    output = section_output_list_FindEntryEqual(Entry, prev_region->end_ofs);
+                    if (output != NULL && prev_region->end_ofs + output->len + 1 == region->begin_ofs)
                     {
-                        prev_region = section_region_list_FindEntryLower(Entry, region->begin_ofs);
-                        if (prev_region != NULL)
-                        {
-                            output = section_output_list_FindEntryEqual(Entry, prev_region->end_ofs);
-                            if (output != NULL)
-                            {
-                                if (prev_region->end_ofs + output->len + 1 == region->begin_ofs)
-                                {
-                                    prev_region->flags_to_write |= flags_to_write;
-                                    flags_to_write = 0;
-                                }
-                            }
-                        }
+                        prev_region->flags_to_write |= flags_to_write;
+                        flags_to_write = 0;
                     }
                 }
-            }*/
+            }
+#endif
+
+            if (flags_to_write && SR_collect_enabled())
+            {
+                char what[96];
+
+                snprintf(what, sizeof(what), "flags 0x%x needed at start of region loc_%X", (unsigned int)flags_to_write, (unsigned int)(section[Entry].start + cur_ofs));
+                SR_collect_unsupported(what);
+                flags_to_write = 0;
+            }
 
             if (flags_to_write)
             {

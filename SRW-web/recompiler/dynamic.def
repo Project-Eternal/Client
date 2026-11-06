@@ -1,0 +1,50 @@
+# functions the program looks up at run time (delay-loaded, or LoadLibrary + GetProcAddress); same format as imports.def
+FreeEnvironmentStringsW kernel32 1 p
+WideCharToMultiByte kernel32 8 i i w i p i p p
+GetEnvironmentStringsW kernel32 0
+GetProcAddress kernel32 2 i s
+GetCPInfo kernel32 2 i p
+MultiByteToWideChar kernel32 6 i i s i p i
+LCMapStringW kernel32 6 i i w i p i
+GetStringTypeW kernel32 4 i w i p
+IsValidCodePage kernel32 1 i
+GetLocaleInfoW kernel32 4 i i p i
+CompareStringW kernel32 6 i i w i w i
+Direct3DCreate9 d3d9 1 i
+IsDebuggerPresent kernel32 0
+TryEnterCriticalSection kernel32 1 p
+IsProcessorFeaturePresent kernel32 1 i
+CreateFileW kernel32 7 w i i p i i i
+GetFileAttributesW kernel32 1 w
+SetFileAttributesW kernel32 2 w i
+MoveFileW kernel32 2 w w
+CopyFileW kernel32 3 w w i
+DeleteFileW kernel32 1 w
+CreateDirectoryW kernel32 2 w p
+RemoveDirectoryW kernel32 1 w
+SetCurrentDirectoryW kernel32 1 w
+GetCurrentDirectoryW kernel32 2 i p
+FindNextFileW kernel32 2 i p
+FindFirstFileW kernel32 2 w p
+GetDiskFreeSpaceExW kernel32 4 w p p p
+GetModuleFileNameW kernel32 3 i p i
+CreateProcessW kernel32 10 w w p p i i p w p p
+GetDriveTypeW kernel32 1 w
+GetFullPathNameW kernel32 4 w i p p
+GetWindowLongA user32 2 i i
+GetPropA user32 2 i s
+SetPropA user32 3 i s i
+RemovePropA user32 2 i s
+SetWindowLongA user32 3 i i i
+CallWindowProcA user32 5 i i i i i
+SetWindowTextW user32 2 i w
+MessageBoxW user32 4 i w w i
+DrawTextExW user32 6 i w i p i p
+RegQueryValueExW advapi32 6 i w p p p p
+RegOpenKeyExW advapi32 5 i w i i p
+RegSetValueExW advapi32 6 i w i i p i
+RegCreateKeyExW advapi32 9 i w i p i i p p p
+EnableWindow user32 2 i i
+GetClipboardData user32 1 i
+SetCursorPos user32 2 i i
+GetCursorPos user32 1 p

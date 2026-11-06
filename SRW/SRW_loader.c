@@ -1125,7 +1125,7 @@ int SRW_LoadFile(const char *fname)
                         }
                     }
 
-                    if (strcasecmp(DllName, "WSOCK32.dll") == 0)
+                    if (strcasecmp(DllName, "WSOCK32.dll") == 0 || strcasecmp(DllName, "WS2_32.dll") == 0)
                     {
                         switch(*LookupTable & 0xffff)
                         {
@@ -1133,11 +1133,13 @@ int SRW_LoadFile(const char *fname)
                             case   2: ProcName = "ws2_32.bind"; break;
                             case   3: ProcName = "ws2_32.closesocket"; break;
                             case   4: ProcName = "ws2_32.connect"; break;
+                            case   5: ProcName = "ws2_32.getpeername"; break;
                             case   6: ProcName = "ws2_32.getsockname"; break;
                             case   7: ProcName = "getsockopt"; break;
                             case   8: ProcName = "ws2_32.htonl"; break;
                             case   9: ProcName = "ws2_32.htons"; break;
                             case  10: ProcName = "ws2_32.inet_addr"; break;
+                            case  11: ProcName = "ws2_32.inet_ntoa"; break;
                             case  12: ProcName = "ws2_32.ioctlsocket"; break;
                             case  13: ProcName = "ws2_32.listen"; break;
                             case  14: ProcName = "ws2_32.ntohl"; break;
@@ -1152,8 +1154,12 @@ int SRW_LoadFile(const char *fname)
                             case  23: ProcName = "ws2_32.socket"; break;
                             case  52: ProcName = "ws2_32.gethostbyname"; break;
                             case  57: ProcName = "ws2_32.gethostname"; break;
+                            case 103: ProcName = "ws2_32.WSAAsyncGetHostByName"; break;
+                            case 108: ProcName = "ws2_32.WSACancelAsyncRequest"; break;
                             case 111: ProcName = "ws2_32.WSAGetLastError"; break;
                             case 115: ProcName = "ws2_32.WSAStartup"; break;
+                            case 116: ProcName = "ws2_32.WSACleanup"; break;
+                            case 151: ProcName = "ws2_32.__WSAFDIsSet"; break;
                         }
                     }
 
@@ -1170,6 +1176,17 @@ int SRW_LoadFile(const char *fname)
                     HintTable = (P_IMAGE_IMPORT_BY_NAME) &(section[Entry].adr[RelAdr]);
 
                     ProcName = (const char *)HintTable->Name;
+                }
+
+                if (strchr(ProcName, '@') != NULL)
+                {
+                    // stdcall decoration (_Name@N): use the plain API name, the '@' is not valid in a symbol
+                    char *clean;
+
+                    clean = strdup(ProcName);
+                    *strchr(clean, '@') = 0;
+                    if (clean[0] == '_') memmove(clean, clean + 1, strlen(clean));
+                    ProcName = clean;
                 }
 
 #if (defined(_DEBUG_PE) && (_DEBUG_PE >= 2))
@@ -1227,6 +1244,7 @@ int SRW_LoadFile(const char *fname)
                     }
 
                     extrn->is_import = 1;
+                    extrn->is_used = 1; // the import address table refers to every import, so all of them must be declared
                 }
                 else
                 {

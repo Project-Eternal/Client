@@ -65,7 +65,7 @@ static void SR_write_output_line(output_data *item, void *data)
 
 #define DATA ((Entry_FILE *) data)
 
-    if ( (item->str != NULL) || (item->type <= 0) || (item->type == OT_NONE))
+    if ( (item->str != NULL) || (item->type <= 0) || (item->type == OT_NONE) || (item->type == OT_DATA))
     {
 #if (OUTPUT_TYPE == OUT_LLASM)
         if (item->type == OT_INSTRUCTION)
@@ -147,7 +147,7 @@ static void SR_write_output_line(output_data *item, void *data)
         }
         else
         {
-            if (item->type == OT_UNKNOWN)
+            if (item->type == OT_UNKNOWN || item->type == OT_DATA)
             {
                 fprintf(DATA->fout, "db %i\n", section[DATA->Entry].adr[item->ofs]);
             }

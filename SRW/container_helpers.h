@@ -434,6 +434,15 @@ void section_output_list_Free(unsigned int SecNum);
 /* region_list */
 region_data *section_region_list_Insert(unsigned int SecNum, Word_t Index, uint_fast32_t end_ofs);
 
+static INLINE region_data *section_region_list_FindEntryEqual(unsigned int SecNum, Word_t Index)
+{
+    region_data **region_value;
+
+    region_value = (region_data **)OMap_Get(&section[SecNum].region_list, Index);
+
+    return (region_value)?*region_value:NULL;
+}
+
 static INLINE region_data *section_region_list_FindEntryFirst(unsigned int SecNum)
 {
     region_data **region_value;
@@ -452,7 +461,7 @@ static INLINE region_data *section_region_list_FindEntryHigher(unsigned int SecN
     return (region_value)?*region_value:NULL;
 }
 
-/*static INLINE region_data *section_region_list_FindEntryLast(unsigned int SecNum)
+static INLINE region_data *section_region_list_FindEntryLast(unsigned int SecNum)
 {
     region_data **region_value;
 
@@ -468,7 +477,7 @@ static INLINE region_data *section_region_list_FindEntryLower(unsigned int SecNu
     region_value = (region_data **)OMap_Prev(&section[SecNum].region_list, Index, NULL);
 
     return (region_value)?*region_value:NULL;
-}*/
+}
 
 void section_region_list_Free(unsigned int SecNum);
 

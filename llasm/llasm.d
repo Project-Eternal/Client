@@ -118,6 +118,10 @@ enum RegisterState { Empty, Read, Write }
 
 string input_filename, output_filename, input_directory, return_procedure, dispatcher_procedure;
 string[] include_directories;
+// the program's code addresses are kept as they are (see -va-map): an indirect jump or call, and the return, look the procedure
+// up in a table indexed by the address; addresses outside of the table are procedure pointers already
+bool va_map;
+uint va_map_base, va_map_size;
 bool output_preprocessed_file, input_reading_proc, input_reading_dataseg, position_independent_code, old_bitcode, no_tail_calls, pointer_size_64, pointers_with_offset, inline_idiv_instr, inline_float_instr, inline_float2_instr;
 uint global_optimization_level, procedure_optimization_level;
 string[string] function_names;
@@ -1412,6 +1416,15 @@ string get_int32_to_ptr(string value, string ptrtype = "i8", bool nullable_point
     }
 }
 
+uint parse_number(const(char)[] text)
+{
+    if (text.length > 2 && text[0..2] == "0x")
+    {
+        return to!uint(text[2..$], 16);
+    }
+    return to!uint(text);
+}
+
 string get_addr_to_int32(string value, string ptrtype = "i8", bool nullable_pointer = false)
 {
     if (pointers_with_offset)
@@ -1575,6 +1588,17 @@ string get_parameter_read_value(param_struct param, bool as_pointer = false, boo
             }
             else
             {
+                if (va_map && param.value.length > 4 && param.value[0..4] == "loc_")
+                {
+                    // the name of a procedure of the program is its address
+                    try
+                    {
+                        return to!string(to!uint(param.value[4..$], 16));
+                    }
+                    catch (Exception e)
+                    {
+                    }
+                }
                 return get_addr_to_int32("@" ~ param.value, ((no_tail_calls)?"i8*":"void") ~ "(%_cpu*)");
             }
         default:
@@ -1859,7 +1883,18 @@ void binary_float_instr(string instr, int paramtype, bool reverse_param, bool re
         increase_float_stack_top(top, 1, last_reg_write1, float_stack_top);
     }
 
-    store_temporary_register_to_reg("0", "st_sw_cond", last_reg_write0);
+    clear_float_c1(last_reg_write0);
+}
+
+// the x87 status after a load, a store or arithmetic: C1 cleared, C3 C2 C0 kept (MSVC code does fcom; fst; fnstsw and reads the compare's
+// result after the store, as llasm_float.c does it)
+void clear_float_c1(bool last_reg_write0)
+{
+    string old = get_parameter_read_value(param_struct("reg", "st_sw_cond"));
+    string dst = get_new_temporary_register();
+
+    add_output_line(dst ~ " = and i32 " ~ old ~ ", -513");
+    store_temporary_register_to_reg(dst, "st_sw_cond", last_reg_write0);
 }
 
 void compare_float_instr(int paramtype, int pop, param_struct paramvals0, bool last_reg_write0, bool last_reg_write1, int float_stack_top)
@@ -1893,7 +1928,13 @@ void compare_float_instr(int paramtype, int pop, param_struct paramvals0, bool l
     add_output_line(tmp4 ~ " = select i1 " ~ tmp3 ~ ", i32 " ~ to!string(0x4000) ~ ", i32 0");
     add_output_line(dst ~ " = select i1 " ~ tmp2 ~ ", i32 " ~ to!string(0x0100) ~ ", i32 " ~ tmp4);
 
-    store_temporary_register_to_reg(dst, "st_sw_cond", last_reg_write0);
+    // unordered (a NaN): C3 C2 C0 all set, as x86 does (numbered temporaries must be defined in the order they were made)
+    string tmp5 = get_new_temporary_register();
+    string tmp6 = get_new_temporary_register();
+    add_output_line(tmp5 ~ " = fcmp uno double " ~ src1 ~ ", " ~ src2);
+    add_output_line(tmp6 ~ " = select i1 " ~ tmp5 ~ ", i32 " ~ to!string(0x4500) ~ ", i32 " ~ dst);
+
+    store_temporary_register_to_reg(tmp6, "st_sw_cond", last_reg_write0);
 
     if (pop > 0)
     {
@@ -2967,7 +3008,32 @@ bool process_proc_body(string proc_name)
                         writeback_float_registers(current_float_stack_top);
                     }
 
-                    if (no_tail_calls)
+                    if (no_tail_calls && va_map && paramvals[0].type != "procaddr")
+                    {
+                        string v = get_parameter_read_value(paramvals[0]);
+                        string idx = get_new_temporary_register();
+                        string inside = get_new_temporary_register();
+                        string safe = get_new_temporary_register();
+                        string slot = get_new_temporary_register();
+                        string entry = get_new_temporary_register();
+                        string empty = get_new_temporary_register();
+                        string looked = get_new_temporary_register();
+                        string mapped = get_new_temporary_register();
+                        string ptr = get_new_temporary_register();
+                        string arraytype = "[" ~ to!string(va_map_size) ~ " x i32]";
+
+                        add_output_line(idx ~ " = sub i32 " ~ v ~ ", " ~ to!string(va_map_base));
+                        add_output_line(inside ~ " = icmp ult i32 " ~ idx ~ ", " ~ to!string(va_map_size));
+                        add_output_line(safe ~ " = select i1 " ~ inside ~ ", i32 " ~ idx ~ ", i32 0");
+                        add_output_line(slot ~ " = getelementptr " ~ arraytype ~ ", " ~ arraytype ~ "* @SRW_VaMap, i32 0, i32 " ~ safe);
+                        add_output_line(entry ~ " = load i32, i32* " ~ slot ~ ", align 4");
+                        add_output_line(empty ~ " = icmp eq i32 " ~ entry ~ ", 0");
+                        add_output_line(looked ~ " = select i1 " ~ empty ~ ", i32 " ~ v ~ ", i32 " ~ entry);
+                        add_output_line(mapped ~ " = select i1 " ~ inside ~ ", i32 " ~ looked ~ ", i32 " ~ v);
+                        add_output_line(ptr ~ " = inttoptr i32 " ~ mapped ~ " to i8*");
+                        add_output_line("ret i8* " ~ ptr);
+                    }
+                    else if (no_tail_calls)
                     {
                         string addr = get_parameter_read_value(paramvals[0], true);
                         add_output_line("ret i8* " ~ addr);
@@ -2977,6 +3043,42 @@ bool process_proc_body(string proc_name)
                         if (paramvals[0].type == "procaddr")
                         {
                             add_output_line("musttail call fastcc void @" ~ paramvals[0].value ~ "(%_cpu* %cpu) nounwind");
+                        }
+                        else if (va_map)
+                        {
+                            // a guest code address is looked up in the map (as the dispatcher's version above does); a value outside it is a
+                            // function table index; anything else is a jump to a bad address, reported instead of an anonymous trap
+                            string v = get_parameter_read_value(paramvals[0]);
+                            string idx = get_new_temporary_register();
+                            string inside = get_new_temporary_register();
+                            string safe = get_new_temporary_register();
+                            string slot = get_new_temporary_register();
+                            string entry = get_new_temporary_register();
+                            string empty = get_new_temporary_register();
+                            string looked = get_new_temporary_register();
+                            string mapped = get_new_temporary_register();
+                            string bad = get_new_temporary_register();
+                            string labelbad = get_new_label();
+                            string labelok = get_new_label();
+                            string arraytype = "[" ~ to!string(va_map_size) ~ " x i32]";
+
+                            add_output_line(idx ~ " = sub i32 " ~ v ~ ", " ~ to!string(va_map_base));
+                            add_output_line(inside ~ " = icmp ult i32 " ~ idx ~ ", " ~ to!string(va_map_size));
+                            add_output_line(safe ~ " = select i1 " ~ inside ~ ", i32 " ~ idx ~ ", i32 0");
+                            add_output_line(slot ~ " = getelementptr " ~ arraytype ~ ", " ~ arraytype ~ "* @SRW_VaMap, i32 0, i32 " ~ safe);
+                            add_output_line(entry ~ " = load i32, i32* " ~ slot ~ ", align 4");
+                            add_output_line(empty ~ " = icmp eq i32 " ~ entry ~ ", 0");
+                            add_output_line(looked ~ " = select i1 " ~ empty ~ ", i32 " ~ v ~ ", i32 " ~ entry);
+                            add_output_line(mapped ~ " = select i1 " ~ inside ~ ", i32 " ~ looked ~ ", i32 " ~ v);
+                            add_output_line(bad ~ " = icmp uge i32 " ~ mapped ~ ", 1048576");
+                            add_output_line("br i1 " ~ bad ~ ", label %" ~ labelbad ~ ", label %" ~ labelok);
+                            add_output_line(labelbad ~ ":");
+                            add_output_line("call void @SRW_BadJump(%_cpu* %cpu, i32 " ~ mapped ~ ") nounwind");
+                            add_output_line("unreachable");
+                            add_output_line(labelok ~ ":");
+                            string addr = get_int32_to_ptr(mapped, "void(%_cpu*)");
+
+                            add_output_line("musttail call fastcc void " ~ addr ~ "(%_cpu* %cpu) nounwind");
                         }
                         else
                         {
@@ -3370,7 +3472,7 @@ bool process_proc_body(string proc_name)
                     add_output_line(dst ~ " = fneg double " ~ src);
 
                     store_temporary_register_to_float_reg(dst, top, 0, current_float_stack_top, last_float_reg_write[0]);
-                    store_temporary_register_to_reg("0", "st_sw_cond", last_reg_write[0]);
+                    clear_float_c1(last_reg_write[0]);
                 }
                 break;
             case "FXCH_ST": // FXCH_ST const
@@ -3382,7 +3484,7 @@ bool process_proc_body(string proc_name)
 
                     store_temporary_register_to_float_reg(src1, top, index, current_float_stack_top, last_float_reg_write[1]);
                     store_temporary_register_to_float_reg(src2, top, 0, current_float_stack_top, last_float_reg_write[0]);
-                    store_temporary_register_to_reg("0", "st_sw_cond", last_reg_write[0]);
+                    clear_float_c1(last_reg_write[0]);
                 }
                 break;
             case "FILD_INT32": // FILD_INT32 reg/const
@@ -3438,7 +3540,7 @@ bool process_proc_body(string proc_name)
 
                     store_temporary_register_to_float_reg(dst, top2, 0, (current_float_stack_top + 7) & 7, last_float_reg_write[0]);
                     store_temporary_register_to_reg(top2, "st_top", last_reg_write[1]);
-                    store_temporary_register_to_reg("0", "st_sw_cond", last_reg_write[0]);
+                    clear_float_c1(last_reg_write[0]);
                 }
                 break;
             case "FST_FLOAT":
@@ -3473,7 +3575,7 @@ bool process_proc_body(string proc_name)
                         increase_float_stack_top(top, 1, last_reg_write[1], current_float_stack_top);
                     }
 
-                    store_temporary_register_to_reg("0", "st_sw_cond", last_reg_write[0]);
+                    clear_float_c1(last_reg_write[0]);
                 }
                 break;
             case "FIADD_INT32": // FIADD_INT32 reg/const
@@ -3627,7 +3729,7 @@ bool process_proc_body(string proc_name)
                     add_output_line(dst ~ " = call double @llvm." ~ instr ~ ".f64(double " ~ src ~ ")");
 
                     store_temporary_register_to_float_reg(dst, top, 0, current_float_stack_top, last_float_reg_write[0]);
-                    store_temporary_register_to_reg("0", "st_sw_cond", last_reg_write[0]);
+                    clear_float_c1(last_reg_write[0]);
                 }
                 break;
             case "FTAN_VOID":
@@ -3648,7 +3750,7 @@ bool process_proc_body(string proc_name)
 
                     store_temporary_register_to_float_reg("1.0", top2, 0, (current_float_stack_top + 7) & 7, last_float_reg_write[1]);
                     store_temporary_register_to_reg(top2, "st_top", last_reg_write[1]);
-                    store_temporary_register_to_reg("0", "st_sw_cond", last_reg_write[0]);
+                    clear_float_c1(last_reg_write[0]);
                 }
                 break;
             case "FPOW_VOID":
@@ -3664,7 +3766,7 @@ bool process_proc_body(string proc_name)
 
                     store_temporary_register_to_float_reg(dst, top, 1, current_float_stack_top, last_float_reg_write[0]);
                     increase_float_stack_top(top, 1, last_reg_write[1], current_float_stack_top);
-                    store_temporary_register_to_reg("0", "st_sw_cond", last_reg_write[0]);
+                    clear_float_c1(last_reg_write[0]);
                 }
                 break;
             case "FYL2X_VOID":
@@ -3682,7 +3784,7 @@ bool process_proc_body(string proc_name)
 
                     store_temporary_register_to_float_reg(dst, top, 1, current_float_stack_top, last_float_reg_write[0]);
                     increase_float_stack_top(top, 1, last_reg_write[1], current_float_stack_top);
-                    store_temporary_register_to_reg("0", "st_sw_cond", last_reg_write[0]);
+                    clear_float_c1(last_reg_write[0]);
                 }
                 break;
             default:
@@ -3796,6 +3898,12 @@ public int main(string[] args)
                 break;
             case "-no-tail-calls":
                 no_tail_calls = true;
+                break;
+            case "-va-map":
+                va_map = true;
+                va_map_base = parse_number(args[i + 1]);
+                va_map_size = parse_number(args[i + 2]);
+                i += 2;
                 break;
             case "-p":
                 output_preprocessed_file = true;
@@ -5087,6 +5195,11 @@ public int main(string[] args)
     {
         add_output_line("@" ~ extern_name ~ " = external global i8");
     }
+    if (va_map)
+    {
+        add_output_line("@SRW_VaMap = external global [" ~ to!string(va_map_size) ~ " x i32]");
+        if (!no_tail_calls) add_output_line("declare void @SRW_BadJump(%_cpu*, i32) nounwind");
+    }
 
     add_output_line("");
     add_output_line("; external functions");
@@ -5229,6 +5342,7 @@ public int main(string[] args)
             if (no_tail_calls && dispatcher_procedure == "")
             {
                 dispatcher_procedure = "__dispatcher_procedure";
+                if (va_map) add_output_line("declare void @SRW_BadJump(%_cpu*, i32) nounwind");
                 add_output_line("define private fastcc void @" ~ dispatcher_procedure ~ "(%_cpu* %cpu, i8*(%_cpu*)* %proc) nounwind {");
 
                 string aligntproc = ", align " ~ ((pointer_size_64)?"8":"4");
@@ -5263,7 +5377,26 @@ public int main(string[] args)
                 add_output_line(r8 ~ " = bitcast i8* " ~ r7 ~ " to i8*(%_cpu*)*");
                 add_output_line("store i8*(%_cpu*)* " ~ r8 ~ ", i8*(%_cpu*)** %tproc" ~ aligntproc);
                 add_output_line(r9 ~ " = icmp eq i8* " ~ r7 ~ ", null");
-                add_output_line("br i1 " ~ r9 ~ ", label %l_2, label %l_1");
+                if (va_map)
+                {
+                    // guest code addresses are looked up before they get here; what is left must be a small function table index,
+                    // anything else is a jump to a bad address, which is reported instead of trapping without a hint
+                    string rp = get_new_temporary_register();
+                    string rb = get_new_temporary_register();
+
+                    add_output_line("br i1 " ~ r9 ~ ", label %l_2, label %l_check_jump");
+                    add_output_line("l_check_jump:");
+                    add_output_line(rp ~ " = ptrtoint i8* " ~ r7 ~ " to i32");
+                    add_output_line(rb ~ " = icmp uge i32 " ~ rp ~ ", 1048576");
+                    add_output_line("br i1 " ~ rb ~ ", label %l_bad_jump, label %l_1");
+                    add_output_line("l_bad_jump:");
+                    add_output_line("call void @SRW_BadJump(%_cpu* %cpu, i32 " ~ rp ~ ") nounwind");
+                    add_output_line("unreachable");
+                }
+                else
+                {
+                    add_output_line("br i1 " ~ r9 ~ ", label %l_2, label %l_1");
+                }
                 add_output_line("l_2:");
 
                 add_output_line("ret void");

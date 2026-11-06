@@ -37,6 +37,14 @@ typedef struct {
 #endif
     int64_t _st_result;
     void *stack_bottom, *stack_top;
+    // SSE/MMX state (llasm_sse.c; llasm's own view of the structure ends before stack_bottom, so these are only seen from C)
+    uint32_t _mxcsr, _sse_reserved[3];
+    union {
+        float f[4]; double d[2];
+        uint8_t u8[16]; int8_t i8[16]; uint16_t u16[8]; int16_t i16[8];
+        uint32_t u32[4]; int32_t i32[4]; uint64_t u64[2]; int64_t i64[2];
+    } _xmm[8];
+    uint64_t _mm[8];
 } _cpu;
 
 #define CPU _cpu *cpu
