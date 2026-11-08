@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebGL vs WebGPU draw benchmark</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; max-width: 1000px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p, li { margin: 4px 0; }
+  fieldset { margin: 12px 0; padding: 8px 12px; }
+  label { display: inline-block; margin: 2px 12px 2px 0; }
+  input[type=number] { width: 70px; }
+  button { font: inherit; padding: 4px 12px; margin-right: 6px; }
+  pre { background: #f4f4f4; padding: 8px; overflow: auto; max-height: 460px; }
+  canvas { display: block; border: 1px solid #ccc; margin: 8px 0; max-width: 100%; }
+  @media (prefers-color-scheme: dark) { body { background: #181818; color: #ddd; } pre { background: #222; } canvas { border-color: #444; } }
+</style>
+</head>
+<body>
+<h1>WebGL vs WebGPU draw benchmark</h1>
+<p>A scene shaped like a World of Warcraft 3.3.5a frame (about 450 draws, 100k triangles, alpha blending, per-draw matrices and textures), drawn through WebGL 2 with the call pattern of the Direct3D 9 layer and through WebGPU. It measures how long a frame takes to <b>finish on the GPU, without waiting for the display</b>, and how long the CPU spends issuing it.</p>
+<ul>
+  <li>Keep this tab in front and the window focused while it runs. Close other graphics-heavy apps.</li>
+  <li>WebGPU has only 1x and 4x multisampling; WebGL can do 2x as the game does.</li>
+  <li>The rows with <i>uploads</i> repeat the game's habit of updating its dynamic buffers about 300 times per frame between draws that read them; <i>inline</i> is the game's order, <i>upfront</i> does all updates before the first draw, <i>other</i> updates a buffer no draw reads.</li>
+  <li>Press <b>Run suite</b> (about a minute), then <b>Copy results</b> and paste them back.</li>
+</ul>
+
+<fieldset>
+  <legend>Single run</legend>
+  <label>API <select id="api"><option>webgl2</option><option>webgpu</option></select></label>
+  <label>draws <input id="draws" type="number" value="450"></label>
+  <label>grid <input id="grid" type="number" value="11" title="each draw is a grid of N x N quads: 2*N*N triangles"></label>
+  <label>MSAA <select id="msaa"><option>1</option><option>2</option><option>4</option></select></label>
+  <label>size <input id="w" type="number" value="1512"> x <input id="h" type="number" value="864"></label>
+  <label>vertex shader <select id="shader"><option>heavy</option><option>lean</option></select></label>
+  <label>WebGL calls <select id="calls"><option>game</option><option>lean</option></select></label>
+  <label>buffer updates/frame <input id="uploads" type="number" value="0" title="the game updates its dynamic buffers about 300 times per frame; the data written is the data already there"></label>
+  <label>KB each <input id="uploadKB" type="number" value="8"></label>
+  <label>update strategy <select id="strategy"><option>inline</option><option>upfront</option><option>other</option><option>own</option><option>stream</option></select></label>
+  <label>worker <select id="worker"><option>no</option><option>yes</option></select></label>
+  <label>WebGPU bundle <select id="bundle"><option>no</option><option>yes</option></select></label>
+  <label>frames <input id="frames" type="number" value="120"></label>
+  <br><button id="run">Run once</button> <button id="suite">Run suite</button> <button id="copy">Copy results</button>
+</fieldset>
+
+<pre id="out">Ready.</pre>
+<canvas id="cv"></canvas>
+
+<script id="shared" type="text/plain">
+// ------------------------------------------------------------------------------------------------ the scene
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+function buildScene(c) {
+  const rnd = mulberry(12345), n = c.grid, vpd = (n + 1) * (n + 1), tpd = 2 * n * n, STRIDE = 36;
+  const vbuf = new ArrayBuffer(c.draws * vpd * STRIDE), f = new Float32Array(vbuf), u8 = new Uint8Array(vbuf);
+  for (let d = 0; d < c.draws; d++) {
+    for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
+      const v = d * vpd + j * (n + 1) + i, o = v * 9;
+      f[o] = i / n - 0.5; f[o + 1] = j / n - 0.5; f[o + 2] = 0.05 * Math.sin(i * 0.9 + j * 0.7);
+      f[o + 3] = 0; f[o + 4] = 0; f[o + 5] = 1;
+      u8[v * STRIDE + 24] = 128 + (rnd() * 127 | 0); u8[v * STRIDE + 25] = 128 + (rnd() * 127 | 0); u8[v * STRIDE + 26] = 128 + (rnd() * 127 | 0); u8[v * STRIDE + 27] = 255;
+      f[o + 7] = i / n * 3; f[o + 8] = j / n * 3;
+    }
+  }
+  const idx = new Uint16Array(tpd * 3); let k = 0;
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const a = j * (n + 1) + i, b = a + 1, cc = a + n + 1, dd = cc + 1;
+    idx[k++] = a; idx[k++] = b; idx[k++] = cc; idx[k++] = b; idx[k++] = dd; idx[k++] = cc;
+  }
+  // patches over the screen: about three layers of cover at full size, a third of them alpha blended (foliage), drawn back to front
+  const side = Math.sqrt(3 * c.w * c.h / c.draws), sx = 2 * side / c.w, sy = 2 * side / c.h;
+  const draws = [];
+  for (let d = 0; d < c.draws; d++) {
+    draws.push({ x: rnd() * 2 - 1, y: rnd() * 2 - 1, z: 0.9 - 0.8 * d / c.draws, sx, sy, tex: (rnd() * 32) | 0, blend: rnd() < 0.35, phase: rnd() * 6.28 });
+  }
+  const tex = [];
+  for (let t = 0; t < 32; t++) {
+    const px = new Uint8Array(64 * 64 * 4);
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+      const o = (y * 64 + x) * 4, edge = Math.hypot(x - 32, y - 32) / 32;
+      px[o] = 80 + t * 5; px[o + 1] = 255 - t * 4; px[o + 2] = 120 + ((x ^ y) & 31) * 4; px[o + 3] = edge > 0.9 ? 0 : (t & 1 ? 255 : 180);
+    }
+    tex.push(px);
+  }
+  return { n, vpd, tpd, idxCount: tpd * 3, STRIDE, vbuf, idx, draws, tex };
+}
+
+// the matrices of a frame (column-major): the patch scaled and moved in clip space, a little drift so the data changes every frame
+function frameMatrices(c, S, frame, mvps, worlds, mats) {
+  for (let d = 0; d < S.draws.length; d++) {
+    const p = S.draws[d], drift = 0.01 * Math.sin(frame * 0.05 + p.phase), m = mvps.subarray(d * 16, d * 16 + 16), w = worlds.subarray(d * 16, d * 16 + 16);
+    m.fill(0); m[0] = p.sx; m[5] = p.sy; m[10] = 0.1; m[12] = p.x + drift; m[13] = p.y + drift; m[14] = p.z; m[15] = 1;
+    w.fill(0); w[0] = w[5] = w[10] = w[15] = 1; w[12] = drift;
+    mats[d * 4] = 1; mats[d * 4 + 1] = 1; mats[d * 4 + 2] = 1; mats[d * 4 + 3] = p.blend ? 0.7 : 1;
+  }
+}
+
+// ------------------------------------------------------------------------------------------------ WebGL 2
+var GL_VS_LEAN = `#version 300 es
+in vec4 a_position; in vec3 a_normal; in vec4 a_color; in vec2 a_texcoord;
+uniform mat4 u_mvp; uniform mat4 u_world; uniform vec4 u_mat;
+out vec4 v_color; out vec2 v_tc0;
+void main() { gl_Position = u_mvp * a_position; v_color = a_color * u_mat; v_tc0 = a_texcoord; }`;
+
+var GL_VS_HEAVY = `#version 300 es
+in vec4 a_position; in vec3 a_normal; in vec4 a_color; in vec2 a_texcoord;
+uniform mat4 u_mvp; uniform mat4 u_world; uniform vec4 u_mat;
+uniform mat4 u_tc_matrix[8]; uniform int u_tc_source[8]; uniform int u_tc_count[8];
+uniform int u_light_count; uniform vec3 u_light_pos[8]; uniform vec4 u_light_diff[8];
+out vec4 v_color; out vec2 v_tc0; out vec2 v_tc1; out vec2 v_tc2; out vec2 v_tc3; out vec2 v_tc4; out vec2 v_tc5; out vec2 v_tc6; out vec2 v_tc7;
+vec2 tcFor(int s, vec3 cam_pos, vec3 cam_n) {
+  vec4 coord;
+  int src = u_tc_source[s];
+  if (src == 0) coord = vec4(a_texcoord, 0.0, 1.0);
+  else if (src == 8) coord = vec4(cam_n, 1.0);
+  else if (src == 9) coord = vec4(cam_pos, 1.0);
+  else { vec3 e = normalize(cam_pos); coord = vec4(e - 2.0 * dot(cam_n, e) * cam_n, 1.0); }
+  if (u_tc_count[s] > 0) return (u_tc_matrix[s] * coord).xy;
+  return coord.xy;
+}
+void main() {
+  vec3 cam_pos = (u_world * a_position).xyz; vec3 cam_n = normalize(mat3(u_world) * a_normal);
+  gl_Position = u_mvp * a_position;
+  v_tc0 = tcFor(0, cam_pos, cam_n); v_tc1 = tcFor(1, cam_pos, cam_n); v_tc2 = tcFor(2, cam_pos, cam_n); v_tc3 = tcFor(3, cam_pos, cam_n);
+  v_tc4 = tcFor(4, cam_pos, cam_n); v_tc5 = tcFor(5, cam_pos, cam_n); v_tc6 = tcFor(6, cam_pos, cam_n); v_tc7 = tcFor(7, cam_pos, cam_n);
+  vec3 lit = vec3(0.1);
+  for (int i = 0; i < 8; i++) { if (i < u_light_count) { vec3 lv = u_light_pos[i] - cam_pos; float dist = length(lv); float nl = max(dot(cam_n, lv / max(dist, 0.0001)), 0.0); lit += u_light_diff[i].rgb * nl / (1.0 + 0.1 * dist); } }
+  v_color = vec4(clamp(lit, 0.0, 1.0), 1.0) * a_color * u_mat;
+}`;
+
+var GL_FS = `#version 300 es
+precision mediump float;
+in vec4 v_color; in vec2 v_tc0;
+#ifdef HEAVY
+in vec2 v_tc1; in vec2 v_tc2; in vec2 v_tc3; in vec2 v_tc4; in vec2 v_tc5; in vec2 v_tc6; in vec2 v_tc7;
+#endif
+uniform sampler2D u_tex; uniform float u_alpha_ref;
+out vec4 o;
+void main() {
+  vec4 c = texture(u_tex, v_tc0) * v_color;
+#ifdef HEAVY
+  c.rgb += (v_tc1.x + v_tc2.x + v_tc3.x + v_tc4.x + v_tc5.x + v_tc6.x + v_tc7.x) * 0.0;
+#endif
+  if (c.a < u_alpha_ref) discard;
+  o = c;
+}`;
+
+async function runWebGL(c, S, cv) {
+  const gl = cv.getContext('webgl2', { antialias: false, alpha: true, depth: false, stencil: false, powerPreference: 'high-performance' });
+  if (!gl) throw new Error('no WebGL 2');
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  const info = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'unknown';
+  const heavy = c.shader === 'heavy', game = c.calls === 'game';
+  const mk = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const pr = gl.createProgram();
+  gl.attachShader(pr, mk(gl.VERTEX_SHADER, heavy ? GL_VS_HEAVY : GL_VS_LEAN));
+  gl.attachShader(pr, mk(gl.FRAGMENT_SHADER, GL_FS.replace('#version 300 es\n', '#version 300 es\n' + (heavy ? '#define HEAVY 1\n' : ''))));
+  ['a_position', 'a_normal', 'a_color', 'a_texcoord'].forEach((n, i) => gl.bindAttribLocation(pr, i, n));
+  gl.linkProgram(pr);
+  if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+  gl.useProgram(pr);
+  const U = n => gl.getUniformLocation(pr, n);
+  const uMvp = U('u_mvp'), uWorld = U('u_world'), uMat = U('u_mat'), uTex = U('u_tex'), uAlphaRef = U('u_alpha_ref');
+  gl.uniform1i(uTex, 0); gl.uniform1f(uAlphaRef, 0.1);
+  if (heavy) {
+    const tcm = new Float32Array(8 * 16); for (let s = 0; s < 8; s++) { tcm[s * 16] = tcm[s * 16 + 5] = tcm[s * 16 + 10] = tcm[s * 16 + 15] = 1; }
+    gl.uniformMatrix4fv(U('u_tc_matrix'), false, tcm);
+    gl.uniform1iv(U('u_tc_source'), [0, 1, 2, 3, 4, 5, 6, 7]); gl.uniform1iv(U('u_tc_count'), [0, 0, 0, 0, 0, 0, 0, 0]);
+    gl.uniform1i(U('u_light_count'), 2);
+    gl.uniform3fv(U('u_light_pos'), new Float32Array([1, 1, 2, -1, 0.5, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+    gl.uniform4fv(U('u_light_diff'), new Float32Array([1, 1, 0.9, 1, 0.5, 0.6, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+  }
+  // game-like extra uniforms (the Direct3D 9 layer sets a dozen state flags per draw; the values are real uniforms of the shader or ignored locations)
+  const flags = ['u_use_texture', 'u_alpha_test', 'u_lighting', 'u_fog', 'u_clip'].map(U);
+  const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferData(gl.ARRAY_BUFFER, S.vbuf, gl.DYNAMIC_DRAW);
+  const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, S.idx, gl.DYNAMIC_DRAW);
+  const texs = S.tex.map(px => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 64, 64, 0, gl.RGBA, gl.UNSIGNED_BYTE, px); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); return t; });
+  // our own framebuffer (as the game does), resolved to the canvas at the end of the frame
+  const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+  if (c.msaa > 1) gl.renderbufferStorageMultisample(gl.RENDERBUFFER, c.msaa, gl.RGBA8, c.w, c.h); else gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, c.w, c.h);
+  const drb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, drb);
+  if (c.msaa > 1) gl.renderbufferStorageMultisample(gl.RENDERBUFFER, c.msaa, gl.DEPTH_COMPONENT24, c.w, c.h); else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, c.w, c.h);
+  const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, drb);
+  const upLen = Math.min(c.uploadKB * 1024, S.vbuf.byteLength) & ~3, upEvery = c.uploads > 0 ? Math.max(1, Math.floor(c.draws / c.uploads)) : 0;
+  let vb2 = null;   // strategy 'other': the updates go to a buffer that no draw reads
+  if (c.strategy === 'other') { vb2 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb2); gl.bufferData(gl.ARRAY_BUFFER, S.vbuf, gl.DYNAMIC_DRAW); gl.bindBuffer(gl.ARRAY_BUFFER, vb); }
+  const doUpdate = d => { const off = ((d * 7919 * 4) % (S.vbuf.byteLength - upLen)) & ~3; gl.bindBuffer(gl.ARRAY_BUFFER, vb2 || vb); gl.bufferSubData(gl.ARRAY_BUFFER, off, new Uint8Array(S.vbuf, off, upLen)); };
+  // strategies 'own' and 'stream' are the game's pattern: every draw first writes its own vertices and indices, then reads them.
+  //   own:    into its region of the shared vertex and index buffers (the buffers that earlier draws of the frame have read)
+  //   stream: into a buffer of a pool of write-once buffers, bound for this draw only
+  const own = c.strategy === 'own', stream = c.strategy === 'stream', perDraw = own || stream, vbytes = S.vpd * S.STRIDE, ibytes = S.idx.byteLength;
+  const POOL = 512, poolV = [], poolI = [];
+  if (stream) for (let k = 0; k < POOL; k++) { poolV.push(gl.createBuffer()); poolI.push(gl.createBuffer()); }
+  if (own) { // the index buffer holds the indices of every draw, one after the other
+    const big = new Uint16Array(c.draws * S.idx.length); for (let d = 0; d < c.draws; d++) big.set(S.idx, d * S.idx.length);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, big, gl.DYNAMIC_DRAW);
+  }
+  const mvps = new Float32Array(c.draws * 16), worlds = new Float32Array(c.draws * 16), mats = new Float32Array(c.draws * 4);
+  const mvpV = [], worldV = [], matV = [];
+  for (let d = 0; d < c.draws; d++) { mvpV.push(mvps.subarray(d * 16, d * 16 + 16)); worldV.push(worlds.subarray(d * 16, d * 16 + 16)); matV.push(mats.subarray(d * 4, d * 4 + 4)); }
+  gl.enable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.viewport(0, 0, c.w, c.h);
+  for (let i = 0; i < 4; i++) gl.enableVertexAttribArray(i);
+
+  function frame(fr) {
+    frameMatrices(c, S, fr, mvps, worlds, mats);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.clearColor(0.1, 0.1, 0.15, 1); gl.clearDepth(1); gl.depthMask(true); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if (upEvery && !perDraw && c.strategy === 'upfront') for (let d = 0; d < c.draws; d += upEvery) doUpdate(d);
+    for (let d = 0; d < c.draws; d++) {
+      const p = S.draws[d];
+      if (upEvery && !perDraw && c.strategy !== 'upfront' && d % upEvery === 0) doUpdate(d);
+      if (game) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texs[p.tex]); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, null); gl.activeTexture(gl.TEXTURE0); }
+      else gl.bindTexture(gl.TEXTURE_2D, texs[p.tex]);
+      gl.depthMask(!p.blend);
+      gl.uniformMatrix4fv(uMvp, false, mvpV[d]);
+      if (game) {
+        gl.uniformMatrix4fv(uWorld, false, worldV[d]); gl.uniform4fv(uMat, matV[d]);
+        gl.uniform1i(flags[0], 1); gl.uniform1i(flags[1], 1); gl.uniform1i(flags[2], 1); gl.uniform1i(flags[3], d & 1); gl.uniform1i(flags[4], 0);
+        if (!perDraw) gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+      } else { gl.uniformMatrix4fv(uWorld, false, worldV[d]); gl.uniform4fv(uMat, matV[d]); }
+      let base = d * S.vpd * S.STRIDE, indexOffset = 0;
+      if (own) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bufferSubData(gl.ARRAY_BUFFER, base, new Uint8Array(S.vbuf, base, vbytes));
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, d * ibytes, S.idx); indexOffset = d * ibytes;
+      } else if (stream) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, poolV[d % POOL]); gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(S.vbuf, base, vbytes), gl.STREAM_DRAW);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, poolI[d % POOL]); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, S.idx, gl.STREAM_DRAW);
+        base = 0;
+      } else gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, S.STRIDE, base);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, S.STRIDE, base + 12);
+      gl.vertexAttribPointer(2, 4, gl.UNSIGNED_BYTE, true, S.STRIDE, base + 24);
+      gl.vertexAttribPointer(3, 2, gl.FLOAT, false, S.STRIDE, base + 28);
+      gl.drawElements(gl.TRIANGLES, S.idxCount, gl.UNSIGNED_SHORT, indexOffset);
+    }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fb); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    gl.blitFramebuffer(0, 0, c.w, c.h, 0, 0, c.w, c.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  }
+  // gl.finish() does not wait for the GPU in every browser (in Chrome it returned at once with a million triangles queued); a read of one pixel of the resolved
+  // picture cannot be answered before everything drawn into it is done, so that is the wait
+  const one = new Uint8Array(4);
+  return { info: 'WebGL2 / ' + info, frame, wait: async () => { gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, one); }, error: () => gl.getError() };
+}
+
+// ------------------------------------------------------------------------------------------------ WebGPU
+var WGSL_COMMON = `
+struct U { mvp: mat4x4<f32>, world: mat4x4<f32>, mat: vec4<f32>, params: vec4<f32>, tcm: array<mat4x4<f32>, 8>, lpos: array<vec4<f32>, 8>, ldiff: array<vec4<f32>, 8> };
+@group(0) @binding(0) var<uniform> u: U;
+@group(1) @binding(0) var tex: texture_2d<f32>;
+@group(1) @binding(1) var smp: sampler;
+struct VIn { @location(0) pos: vec3<f32>, @location(1) nrm: vec3<f32>, @location(2) col: vec4<f32>, @location(3) uv: vec2<f32> };
+struct VOut { @builtin(position) p: vec4<f32>, @location(0) col: vec4<f32>, @location(1) uv0: vec2<f32>, @location(2) uv1: vec2<f32>, @location(3) uv2: vec2<f32>, @location(4) uv3: vec2<f32>, @location(5) uv4: vec2<f32>, @location(6) uv5: vec2<f32>, @location(7) uv6: vec2<f32>, @location(8) uv7: vec2<f32> };
+`;
+var WGSL_VS_LEAN = `
+@vertex fn vs(i: VIn) -> VOut {
+  var o: VOut; o.p = u.mvp * vec4<f32>(i.pos, 1.0); o.col = i.col * u.mat; o.uv0 = i.uv;
+  o.uv1 = vec2<f32>(0.0); o.uv2 = o.uv1; o.uv3 = o.uv1; o.uv4 = o.uv1; o.uv5 = o.uv1; o.uv6 = o.uv1; o.uv7 = o.uv1; return o; }`;
+var WGSL_VS_HEAVY = `
+fn tcFor(s: i32, camPos: vec3<f32>, camN: vec3<f32>, uv: vec2<f32>) -> vec2<f32> {
+  var coord: vec4<f32>;
+  let src = i32(u.params.y) + s * 0;   // source: the set of the vertices
+  if (src == 0) { coord = vec4<f32>(uv, 0.0, 1.0); }
+  else if (src == 8) { coord = vec4<f32>(camN, 1.0); }
+  else { let e = normalize(camPos); coord = vec4<f32>(e - 2.0 * dot(camN, e) * camN, 1.0); }
+  if (u.params.z > 0.5) { return (u.tcm[s] * coord).xy; }
+  return coord.xy;
+}
+@vertex fn vs(i: VIn) -> VOut {
+  var o: VOut;
+  let wp = (u.world * vec4<f32>(i.pos, 1.0)).xyz; let n = normalize((u.world * vec4<f32>(i.nrm, 0.0)).xyz);
+  o.p = u.mvp * vec4<f32>(i.pos, 1.0);
+  o.uv0 = tcFor(0, wp, n, i.uv); o.uv1 = tcFor(1, wp, n, i.uv); o.uv2 = tcFor(2, wp, n, i.uv); o.uv3 = tcFor(3, wp, n, i.uv);
+  o.uv4 = tcFor(4, wp, n, i.uv); o.uv5 = tcFor(5, wp, n, i.uv); o.uv6 = tcFor(6, wp, n, i.uv); o.uv7 = tcFor(7, wp, n, i.uv);
+  var lit = vec3<f32>(0.1);
+  for (var k = 0; k < 8; k = k + 1) { if (f32(k) < u.params.x) { let lv = u.lpos[k].xyz - wp; let dist = length(lv); let nl = max(dot(n, lv / max(dist, 0.0001)), 0.0); lit = lit + u.ldiff[k].rgb * nl / (1.0 + 0.1 * dist); } }
+  o.col = vec4<f32>(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0) * i.col * u.mat;
+  return o; }`;
+var WGSL_FS = `
+@fragment fn fs(i: VOut) -> @location(0) vec4<f32> {
+  var c = textureSample(tex, smp, i.uv0) * i.col;
+  c = vec4<f32>(c.rgb + (i.uv1.x + i.uv2.x + i.uv3.x + i.uv4.x + i.uv5.x + i.uv6.x + i.uv7.x) * 0.0, c.a);
+  if (c.a < 0.1) { discard; }
+  return c; }`;
+
+async function runWebGPU(c, S, cv) {
+  if (!navigator.gpu) throw new Error('WebGPU is not available in this browser');
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter) throw new Error('no WebGPU adapter');
+  const device = await adapter.requestDevice();
+  let ai = ''; try { const i = adapter.info || (adapter.requestAdapterInfo && await adapter.requestAdapterInfo()); ai = i ? [i.vendor, i.architecture, i.description].filter(Boolean).join(' ') : ''; } catch (e) {}
+  const ctx = cv.getContext('webgpu'), format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+  const heavy = c.shader === 'heavy', samples = c.msaa === 1 ? 1 : 4, SLOT = 1024;
+  if (c.msaa === 2) throw new Error('WebGPU has no 2x multisampling (use 1 or 4)');
+  const vbuf = device.createBuffer({ size: S.vbuf.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }); device.queue.writeBuffer(vbuf, 0, S.vbuf);
+  const ibuf = device.createBuffer({ size: Math.ceil(S.idx.byteLength / 4) * 4, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST }); device.queue.writeBuffer(ibuf, 0, S.idx);
+  const ubuf = device.createBuffer({ size: c.draws * SLOT, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const udata = new Float32Array(c.draws * SLOT / 4);
+  const mvps = new Float32Array(c.draws * 16), worlds = new Float32Array(c.draws * 16), mats = new Float32Array(c.draws * 4);
+  const bgl0 = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 928 } }] });
+  const bgl1 = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} }, { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} }] });
+  const bg0 = device.createBindGroup({ layout: bgl0, entries: [{ binding: 0, resource: { buffer: ubuf, size: 928 } }] });
+  const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' });
+  const bg1 = S.tex.map(px => {
+    const t = device.createTexture({ size: [64, 64], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture({ texture: t }, px, { bytesPerRow: 256 }, [64, 64]);
+    return device.createBindGroup({ layout: bgl1, entries: [{ binding: 0, resource: t.createView() }, { binding: 1, resource: sampler }] });
+  });
+  const module = device.createShaderModule({ code: WGSL_COMMON + (heavy ? WGSL_VS_HEAVY : WGSL_VS_LEAN) + WGSL_FS });
+  const mkPipe = blend => device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl0, bgl1] }),
+    vertex: { module, entryPoint: 'vs', buffers: [{ arrayStride: S.STRIDE, attributes: [
+      { shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x3' },
+      { shaderLocation: 2, offset: 24, format: 'unorm8x4' }, { shaderLocation: 3, offset: 28, format: 'float32x2' }] }] },
+    fragment: { module, entryPoint: 'fs', targets: [blend ? { format, blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } } : { format }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil: { format: 'depth24plus', depthWriteEnabled: !blend, depthCompare: 'less' },
+    multisample: { count: samples } });
+  const pipes = [mkPipe(false), mkPipe(true)];
+  const colorTex = samples > 1 ? device.createTexture({ size: [c.w, c.h], format, sampleCount: samples, usage: GPUTextureUsage.RENDER_ATTACHMENT }) : null;
+  const depthTex = device.createTexture({ size: [c.w, c.h], format: 'depth24plus', sampleCount: samples, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  // static parts of the uniform slots (lights, texture matrices); the per-draw matrices change every frame
+  for (let d = 0; d < c.draws; d++) {
+    const o = d * SLOT / 4;   // layout in floats: mvp 0, world 16, mat 32, params 36 (light count, texcoord source, matrix flag), texture matrices 40, light positions 168, light colors 200
+    udata[o + 36] = 2; udata[o + 37] = 0; udata[o + 38] = 0;
+    for (let s = 0; s < 8; s++) { const m = o + 40 + s * 16; udata[m] = udata[m + 5] = udata[m + 10] = udata[m + 15] = 1; }
+    udata.set([1, 1, 2, 0, -1, 0.5, 2, 0], o + 168); udata.set([1, 1, 0.9, 1, 0.5, 0.6, 1, 1], o + 200);
+  }
+  function drawAll(pass) {
+    let cur = -1;
+    for (let d = 0; d < c.draws; d++) {
+      const p = S.draws[d], want = p.blend ? 1 : 0;
+      if (want !== cur) { pass.setPipeline(pipes[want]); pass.setVertexBuffer(0, vbuf); pass.setIndexBuffer(ibuf, 'uint16'); cur = want; }
+      pass.setBindGroup(0, bg0, [d * SLOT]); pass.setBindGroup(1, bg1[p.tex]);
+      pass.drawIndexed(S.idxCount, 1, 0, d * S.vpd, 0);
+    }
+  }
+  const upLen = Math.min(c.uploadKB * 1024, S.vbuf.byteLength) & ~3, upEvery = c.uploads > 0 ? Math.max(1, Math.floor(c.draws / c.uploads)) : 0;
+  let bundle = null;
+  if (c.bundle === 'yes') {   // the draws recorded once (the uniform data still changes every frame)
+    const enc = device.createRenderBundleEncoder({ colorFormats: [format], depthStencilFormat: 'depth24plus', sampleCount: samples });
+    drawAll(enc); bundle = enc.finish();
+  }
+  function frame(fr) {
+    frameMatrices(c, S, fr, mvps, worlds, mats);
+    for (let d = 0; d < c.draws; d++) { const o = d * SLOT / 4; udata.set(mvps.subarray(d * 16, d * 16 + 16), o); udata.set(worlds.subarray(d * 16, d * 16 + 16), o + 16); udata.set(mats.subarray(d * 4, d * 4 + 4), o + 32); }
+    device.queue.writeBuffer(ubuf, 0, udata);
+    if (upEvery) for (let d = 0; d < c.draws; d += upEvery) { const off = ((d * 7919 * 4) % (S.vbuf.byteLength - upLen)) & ~3; device.queue.writeBuffer(vbuf, off, S.vbuf, off, upLen); }
+    const enc = device.createCommandEncoder(), cur = ctx.getCurrentTexture().createView();
+    const pass = enc.beginRenderPass({
+      colorAttachments: [{ view: colorTex ? colorTex.createView() : cur, resolveTarget: colorTex ? cur : undefined, clearValue: { r: 0.1, g: 0.1, b: 0.15, a: 1 }, loadOp: 'clear', storeOp: colorTex ? 'discard' : 'store' }],
+      depthStencilAttachment: { view: depthTex.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' } });
+    if (bundle) pass.executeBundles([bundle]); else drawAll(pass);
+    pass.end(); device.queue.submit([enc.finish()]);
+  }
+  return { info: 'WebGPU / ' + (ai || 'adapter'), frame, wait: () => device.queue.onSubmittedWorkDone(), error: () => 0 };
+}
+
+async function bench(c, cv) {
+  const S = buildScene(c), r = await (c.api === 'webgpu' ? runWebGPU : runWebGL)(c, S, cv);
+  for (let i = 0; i < 12; i++) { r.frame(i); await r.wait(); }   // warm up: shaders, pipelines, caches
+  const total = [], submit = [];
+  for (let i = 0; i < c.frames; i++) {
+    const t0 = performance.now(); r.frame(i + 100); const t1 = performance.now(); await r.wait(); const t2 = performance.now();
+    submit.push(t1 - t0); total.push(t2 - t0);
+  }
+  const err = r.error();
+  const stat = a => { const s = a.slice().sort((x, y) => x - y); return { mean: a.reduce((x, y) => x + y, 0) / a.length, p50: s[s.length >> 1], p95: s[Math.floor(s.length * 0.95)] }; };
+  const T = stat(total), Sb = stat(submit);
+  const row = { device: r.info, frame_ms_mean: +T.mean.toFixed(2), frame_ms_p50: +T.p50.toFixed(2), frame_ms_p95: +T.p95.toFixed(2),
+                cpu_submit_ms_mean: +Sb.mean.toFixed(2), fps_equiv: +(1000 / T.mean).toFixed(1), gl_error: err };
+  return row;
+}
+
+
+function sleepMs(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+</script>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const out = $('out');
+const log = s => { out.textContent += '\n' + s; out.scrollTop = out.scrollHeight; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const results = [];
+
+
+// the shared code (the scene, the two renderers, the measurement) runs here on the main thread, or in a worker with an OffscreenCanvas as the game does
+const sharedText = document.getElementById('shared').textContent;
+(0, eval)(sharedText);
+const workerURL = URL.createObjectURL(new Blob([sharedText + "\nonmessage = async function (e) { try { postMessage(await bench(e.data.c, e.data.canvas)); } catch (err) { postMessage({ error: String(err && err.message || err) }); } };"], { type: 'text/javascript' }));
+function readCfg() {
+  return { api: $('api').value, draws: +$('draws').value, grid: +$('grid').value, msaa: +$('msaa').value, w: +$('w').value, h: +$('h').value,
+           shader: $('shader').value, calls: $('calls').value, bundle: $('bundle').value, worker: $('worker').value, strategy: $('strategy').value, uploads: +$('uploads').value, uploadKB: +$('uploadKB').value, frames: +$('frames').value };
+}
+function describe(c) { return `${c.api} ${c.shader}-vs ${c.api === 'webgl2' ? 'calls=' + c.calls : 'bundle=' + c.bundle} msaa=${c.msaa} ${c.worker === 'yes' ? 'worker' : 'main thread'}${c.uploads ? ' uploads=' + c.uploads + 'x' + c.uploadKB + 'KB ' + c.strategy : (c.strategy === 'own' || c.strategy === 'stream' ? ' ' + c.strategy : '')}`; }
+
+function makeCanvas(c) { const cv = document.createElement('canvas'); cv.width = c.w; cv.height = c.h; $('cv').replaceWith(cv); cv.id = 'cv'; return cv; }
+async function execute(c) {
+  const cv = makeCanvas(c);
+  if (c.worker !== 'yes') return bench(c, cv);
+  const off = cv.transferControlToOffscreen(), w = new Worker(workerURL);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { w.terminate(); reject(new Error('timed out after 90 s')); }, 90000);
+    w.onmessage = e => { clearTimeout(timer); w.terminate(); e.data.error ? reject(new Error(e.data.error)) : resolve(e.data); };
+    w.onerror = e => { clearTimeout(timer); w.terminate(); reject(new Error(e.message || 'worker error')); };
+    w.postMessage({ c, canvas: off }, [off]);
+  });
+}
+async function runOne(c) {
+  log('running ' + describe(c) + ' ...');
+  try {
+    const row = await execute(c); row.config = describe(c); results.push(row);
+    log(`  frame ${row.frame_ms_mean} ms (p50 ${row.frame_ms_p50}, p95 ${row.frame_ms_p95}), CPU submit ${row.cpu_submit_ms_mean} ms  =>  ${row.fps_equiv} fps   [${row.device}]${row.gl_error ? '  GL error ' + row.gl_error : ''}`);
+  } catch (e) { log('  failed: ' + e.message); results.push({ config: describe(c), error: e.message }); }
+  await sleep(300);
+}
+
+$('run').onclick = async () => { $('run').disabled = $('suite').disabled = true; await runOne(readCfg()); $('run').disabled = $('suite').disabled = false; };
+$('suite').onclick = async () => {
+  $('run').disabled = $('suite').disabled = true;
+  const base = readCfg();
+  log('--- suite: ' + base.draws + ' draws, grid ' + base.grid + ' (' + 2 * base.grid * base.grid * base.draws + ' triangles), ' + base.w + 'x' + base.h + ', ' + base.frames + ' frames each');
+  const v = (o) => Object.assign({}, base, o);
+  const plan = [
+    v({ api: 'webgl2', shader: 'heavy', calls: 'game', msaa: 1, worker: 'no' }),
+    v({ api: 'webgl2', shader: 'heavy', calls: 'game', msaa: 1, worker: 'yes' }),
+    v({ api: 'webgl2', shader: 'heavy', calls: 'game', msaa: 2, worker: 'no' }),
+    v({ api: 'webgl2', shader: 'lean', calls: 'lean', msaa: 1, worker: 'no' }),
+    v({ api: 'webgpu', shader: 'heavy', bundle: 'no', msaa: 1, worker: 'no' }),
+    v({ api: 'webgpu', shader: 'heavy', bundle: 'no', msaa: 1, worker: 'yes' }),
+    v({ api: 'webgpu', shader: 'heavy', bundle: 'yes', msaa: 1, worker: 'no' }),
+    v({ api: 'webgpu', shader: 'heavy', bundle: 'no', msaa: 4, worker: 'no' }),
+    v({ api: 'webgpu', shader: 'lean', bundle: 'no', msaa: 1, worker: 'no' }),
+    v({ api: 'webgl2', shader: 'heavy', calls: 'game', msaa: 1, worker: 'no', uploads: 300, uploadKB: 8, strategy: 'inline' }),
+    v({ api: 'webgl2', shader: 'heavy', calls: 'game', msaa: 1, worker: 'no', uploads: 300, uploadKB: 8, strategy: 'upfront' }),
+    v({ api: 'webgl2', shader: 'heavy', calls: 'game', msaa: 1, worker: 'no', uploads: 300, uploadKB: 8, strategy: 'other' }),
+    v({ api: 'webgl2', shader: 'heavy', calls: 'game', msaa: 1, worker: 'no', uploads: 300, uploadKB: 64, strategy: 'inline' }),
+    v({ api: 'webgpu', shader: 'heavy', bundle: 'no', msaa: 1, worker: 'no', uploads: 300, uploadKB: 8 }),
+    v({ api: 'webgpu', shader: 'heavy', bundle: 'no', msaa: 1, worker: 'no', uploads: 300, uploadKB: 64 }),
+  ];
+  for (const c of plan) await runOne(c);
+  log('--- suite done; press Copy results');
+  $('run').disabled = $('suite').disabled = false;
+};
+$('copy').onclick = async () => {
+  const text = JSON.stringify({ userAgent: navigator.userAgent, cores: navigator.hardwareConcurrency, dpr: devicePixelRatio, results }, null, 1);
+  try { await navigator.clipboard.writeText(text); log('copied ' + results.length + ' rows'); } catch (e) { log('copy failed (' + e.message + '); the text is below'); log(text); }
+};
+if (location.hash === '#suite') $('suite').click();
+</script>
+</body>
+</html>
