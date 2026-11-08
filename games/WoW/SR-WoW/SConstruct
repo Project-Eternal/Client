@@ -104,7 +104,7 @@ elif debug > 1:
 env.Append(CCFLAGS   = '-m32 -DUSE_SDL2 -sUSE_SDL=2 -sUSE_ZLIB=1 -pthread -sUSE_PTHREADS=1',
            CPPPATH   = ['.'],
            LINKFLAGS = '-sUSE_SDL=2 -sUSE_ZLIB=1 -sCASE_INSENSITIVE_FS=1 -lidbfs.js '
-                       '--pre-js web/program.js --pre-js ' + os.path.join(web_dir, 'web', 'runtime.js') + ' --pre-js web/prerun.js --shell-file web/shell.html '
+                       '--pre-js web/program.js --pre-js ' + os.path.join(web_dir, 'web', 'runtime.js') + ' --pre-js web/prerun.js --post-js ' + os.path.join(web_dir, 'web', 'glstate.js') + ' --shell-file web/shell.html '
                        '-m32 -pthread -sUSE_PTHREADS=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=536870912 -sMAXIMUM_MEMORY=2147483648 '
                        '-sDYNAMIC_EXECUTION=0 -sEXIT_RUNTIME=0 -sPTHREAD_POOL_SIZE=0 -sALLOW_BLOCKING_ON_MAIN_THREAD=0 '
                        '-sEXPORTED_RUNTIME_METHODS=["ccall","cwrap","FS","callMain"] --profiling-funcs '
@@ -294,7 +294,7 @@ game_objs += [cxx_env.Object(os.path.join('build', 'WoW-mpq'), 'WoW-mpq.cpp'),
               cxx_env.Object(os.path.join('build', 'stormlib-adpcm'), os.path.join('third_party', 'stormlib', 'adpcm.cpp'))]
 
 program = env.Program(out_dir + '/' + program_name + '.html', image_obj + game_objs + support_objs + llasm_objs)
-env.Depends(program, ['web/program.js', os.path.join(web_dir, 'web', 'runtime.js'), 'web/prerun.js', 'web/shell.html'])
+env.Depends(program, ['web/program.js', os.path.join(web_dir, 'web', 'runtime.js'), os.path.join(web_dir, 'web', 'glstate.js'), 'web/prerun.js', 'web/shell.html'])
 
 def run_wasm_opt(target, source, env):
     # the features the module uses (llasm_sse.c: simd; atomics and threads; the tail calls between the recompiled procedures); -g keeps the
