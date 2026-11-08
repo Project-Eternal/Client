@@ -12,7 +12,7 @@ export PERL5LIB="$here/perl${PERL5LIB:+:$PERL5LIB}"   # IPC::Cmd stand-in (can_r
     enable-legacy --prefix="$out/install" -pthread -O2 -DNO_SYSLOG 2>&1 | tail -3
 make -j3 build_libs 2>&1 | tail -3
 mkdir -p "$out/install/lib" "$out/install/include"
-cp libcrypto.a "$out/install/lib/"
+cp libcrypto.a libssl.a "$out/install/lib/"
 [ -f providers/liblegacy.a ] && cp providers/liblegacy.a "$out/install/lib/"
 cp -r "$src/include/openssl" "$out/install/include/"
 cp -r include/openssl/* "$out/install/include/openssl/"   # the generated headers (configuration.h ...)

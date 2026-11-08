@@ -710,6 +710,7 @@ static void run_game_calls(void)
     pthread_mutex_unlock(&game_call_lock);
 }
 
+static uint8_t mouse_held;          /* the buttons the program believes down, as the page's `buttons` bits: 1 left, 2 right, 4 middle */
 #ifdef SRW_DIAGNOSTICS
 /* Scripted input for runs without a person (Node): /autoinput.txt, one command per line, given to the main window from a thread of its own:
    wait MS | key VK (hex: 0d Enter, 09 Tab, 1b Escape...) | type TEXT | say TEXT (Enter, the text, Enter: chat and /script) | log TEXT |
@@ -722,7 +723,6 @@ static EM_BOOL on_focus(int type, const EmscriptenFocusEvent *e, void *user);
 static EM_BOOL on_visibility(int type, const EmscriptenVisibilityChangeEvent *e, void *user);
 static EM_BOOL on_pointer_lock(int type, const EmscriptenPointerlockChangeEvent *e, void *user);
 static void release_input(const char *why);
-static uint8_t mouse_held;
 static void autoinput_clipboard(const char *text, int set);
 static void inject_text(const char *utf8, uint32_t lparam);
 static int utf8_next(const unsigned char *p, uint32_t *code);
@@ -2158,7 +2158,6 @@ static void update_text_entry(void)
 /* Held keys and buttons. In the page the key up of a key, or the button up of a button, can go missing (another window, a dialog, a
    hidden tab, the browser's own menu). On a loss of the focus every held key and button is released (release_input), and every key and
    mouse event is compared with the modifier and button state it carries (reconcile_*). */
-static uint8_t mouse_held;          /* the buttons the program believes down, as the page's `buttons` bits: 1 left, 2 right, 4 middle */
 static uint8_t swallow_key_up[256]; /* the key ups of Alt+Enter, which the page kept to itself */
 
 static uint32_t key_up_lparam(uint32_t vk)

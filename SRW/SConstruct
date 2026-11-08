@@ -42,6 +42,7 @@ Judy library:
   Source code with some fixes is available here: https://github.com/dlmiles/libjudy
 """)
 
+env['ENV']['CPATH'] = os.environ.get('CPATH', '')
 debug = env['debug']
 judy = env['judy']
 mingw = env['mingw']
@@ -66,7 +67,7 @@ else:
         env.Append(CCFLAGS = '-DUSE_JUDY')
     else:
         env.Append(LIBS = ['stdc++'])
-        if env['CXX'] == 'g++':
+        if env['CXX'] == 'g++' and env['PLATFORM'] != 'darwin':
             env.Append(LINKFLAGS = '-static-libgcc -static-libstdc++')
     if debug:
         env.Append(CCFLAGS = '-g -D__DEBUG__')
