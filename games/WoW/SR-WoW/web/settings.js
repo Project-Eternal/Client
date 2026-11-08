@@ -40,6 +40,7 @@ var Game_SettingsFields = [
   { key: 'd3dCull', label: 'Developer setting: Direct3D culling mode (0-2)', group: 'data', type: 'text', default: '0', file: 'd3dcull' },
   { key: 'present', label: 'How frames are handed to the page', group: 'data', type: 'select', default: 'pixels', options: [['pixels', 'As pixels'], ['bitmap', 'As image bitmaps']], file: 'present' },
   { key: 'd3dShaders', label: 'Pixel shaders', group: 'data', type: 'yesno', default: '1', values: ['1', '0'], file: 'd3dshaders' },
+  { key: 'dynStream', label: 'Stream the data of buffers that change during a frame (faster in Chrome; off: update the buffers in place)', group: 'data', type: 'yesno', default: '1', values: ['1', '0'], file: 'dynstream' },
   { key: 'd3dAlphaCoverage', label: 'Antialiased alpha test with multisampling', group: 'data', type: 'yesno', default: '1', phoneDefault: '0', values: ['1', '0'], file: 'd3dalphacoverage' },
   { key: 'checkAddonVersion', label: 'Check the version of add-ons', group: 'data', type: 'yesno', default: '0', values: ['1', '0'] },
   { key: 'd3dDebug', label: 'Developer setting: Direct3D debug mode (0-4)', group: 'data', type: 'text', default: '0', file: 'd3ddebug' },
@@ -125,7 +126,7 @@ function Game_EmbeddedServerWanted()
 function Game_ApplyBootOverrides(firstStart)
 {
   var params = Game_ParseFragmentParams();
-  var portFiles = { netproxy: 1, d3dcull: 1, d3dalphacoverage: 1, d3dshaders: 1, present: 1, sse: 1, soundreader: 1, biglock: 1, debuglog: 1, d3ddebug: 1 };
+  var portFiles = { netproxy: 1, d3dcull: 1, d3dalphacoverage: 1, d3dshaders: 1, present: 1, sse: 1, soundreader: 1, biglock: 1, debuglog: 1, d3ddebug: 1, dynstream: 1 };
 
   Game_SettingsFields.forEach(function (field) {
     var value = Game_FieldValue(field, params);

@@ -126,20 +126,25 @@ struct FrameStats {
     unsigned lit_draws;              // draws with the lighting on
     unsigned texgen_draws;           // draws where a stage generates its coordinates (camera space normal, position, reflection vector, sphere map)
 };
-#ifdef SRW_DIAGNOSTICS
-// Updates of GL buffers (the Unlock of a Direct3D buffer that really sends bytes) in the window, and how many of them are a hazard: the buffer was read by a draw
-// earlier in the same frame, which makes ANGLE (Chrome) copy or wait (about 0.13 ms each, whatever the size: see SRW-web/bench).
+// The frame of the last draw that read each GL buffer (by name), to tell an update that comes after such a draw (a hazard: the update of a buffer that a draw
+// of the same frame has read makes ANGLE copy or wait, about 0.13 ms each whatever the size; see SRW-web/bench) from one that does not.
 static unsigned long long g_buffer_frame = 1;
-static std::vector<unsigned long long> g_buffer_drawn_frame;   // by GL buffer name: the frame of the last draw that read it
-static struct BufferUpdateStats {
-    unsigned updates, hazards, bytes, vb_updates, vb_hazards, ib_updates, ib_hazards, size_class[5], max_bytes;
-    unsigned long long buffers_seen_mask;
-} g_buffer_updates;
+static std::vector<unsigned long long> g_buffer_drawn_frame;
 static void note_buffer_drawn(GLuint buffer) {
     if (buffer == 0 || buffer > (1u << 20)) return;
     if (buffer >= g_buffer_drawn_frame.size()) g_buffer_drawn_frame.resize((size_t) buffer + 256, 0);
     g_buffer_drawn_frame[buffer] = g_buffer_frame;
 }
+static bool buffer_drawn_this_frame(GLuint buffer) { return buffer != 0 && buffer < g_buffer_drawn_frame.size() && g_buffer_drawn_frame[buffer] == g_buffer_frame; }
+#define NOTE_BUFFER_DRAWN(b) note_buffer_drawn(b)
+static unsigned g_stream_uploads, g_stream_bytes, g_stream_buffers;   // streaming of changing buffers (see dynstream): uploads and bytes in the window, buffers in that mode
+#ifdef SRW_DIAGNOSTICS
+// Updates of GL buffers (the Unlock of a Direct3D buffer that really sends bytes) in the window, and how many of them are a hazard: the buffer was read by a draw
+// earlier in the same frame, which makes ANGLE (Chrome) copy or wait (about 0.13 ms each, whatever the size: see SRW-web/bench).
+static struct BufferUpdateStats {
+    unsigned updates, hazards, bytes, vb_updates, vb_hazards, ib_updates, ib_hazards, size_class[5], max_bytes;
+    unsigned long long buffers_seen_mask;
+} g_buffer_updates;
 static void note_buffer_update(GLenum target, GLuint buffer, size_t bytes) {
     const bool hazard = buffer != 0 && buffer < g_buffer_drawn_frame.size() && g_buffer_drawn_frame[buffer] == g_buffer_frame;
     g_buffer_updates.updates++; g_buffer_updates.bytes += (unsigned) bytes;
@@ -149,16 +154,11 @@ static void note_buffer_update(GLenum target, GLuint buffer, size_t bytes) {
     g_buffer_updates.size_class[bytes < 1024 ? 0 : bytes < 4096 ? 1 : bytes < 16384 ? 2 : bytes < 65536 ? 3 : 4]++;
     if (bytes > g_buffer_updates.max_bytes) g_buffer_updates.max_bytes = (unsigned) bytes;
 }
-#define NOTE_BUFFER_DRAWN(b) note_buffer_drawn(b)
-#else
-#define NOTE_BUFFER_DRAWN(b) do { } while (0)
 #endif
 static FrameStats g_stats, g_stats_last, g_stats_window;
 static unsigned g_stats_window_frames = 0;
 static void stats_end_frame() {
-#ifdef SRW_DIAGNOSTICS
     g_buffer_frame++;
-#endif
     g_stats_last = g_stats;
     unsigned* w = (unsigned*) &g_stats_window;
     const unsigned* f = (const unsigned*) &g_stats;
@@ -1973,6 +1973,9 @@ static void describe_buffer_updates(char* out, size_t size, unsigned frames) {
              b.updates / f, b.hazards / f, b.updates ? 100.0 * b.hazards / b.updates : 0.0, b.vb_updates / f, b.vb_hazards / f, b.ib_updates / f, b.ib_hazards / f,
              b.bytes / 1024.0 / f, b.updates ? b.bytes / 1024.0 / b.updates : 0.0, b.max_bytes / 1024.0,
              b.size_class[0] / f, b.size_class[1] / f, b.size_class[2] / f, b.size_class[3] / f, b.size_class[4] / f);
+    const size_t n = strlen(out);
+    if (n + 80 < size) snprintf(out + n, size - n, "; streamed: %.0f uploads, %.1f KB per frame, %u buffers in that mode", g_stream_uploads / f, g_stream_bytes / 1024.0 / f, g_stream_buffers);
+    g_stream_uploads = g_stream_bytes = 0;
     memset(&g_buffer_updates, 0, sizeof(g_buffer_updates));
 }
 #endif
@@ -2519,6 +2522,79 @@ static void UploadChanged(GLenum target, GLuint buffer, std::vector<uint8_t>& sh
     memcpy(old + first, data + first, last - first);
 }
 
+// Streaming of changing buffers.
+//
+// A Direct3D game that draws with dynamic buffers writes the vertices and indices of a draw (Lock, write, Unlock) and then draws from them, many times a frame, into
+// the same few buffers. Sending each write to the GL buffer (glBufferSubData) after draws of the frame have read it makes ANGLE copy or wait: about 0.13 ms each,
+// 230 of them a frame, 40 ms (SRW-web/bench: 221 ms for 450 draws with two such writes each, 3.4 ms when every draw gets a write-once buffer).
+//
+// A buffer that is written three times in a frame after being drawn from goes into streaming mode: its writes go to its CPU copy only, and each draw uploads the bytes
+// it reads (the range of vertices and the range of indices) with glBufferData into a buffer of a pool, used for this draw only. A draw that cannot be streamed, or
+// another way of reading the buffer, first brings the GL buffer up to date (SyncGL).
+struct DynState { bool stream = false, dirty = false; unsigned hazards = 0; unsigned long long hazard_frame = 0; UINT lo = 0, hi = 0; };
+namespace dynstream {
+static int enabled = -1;   // /Port/dynstream.txt (the page's setting dynStream): 0 turns it off
+static bool on() {
+    if (enabled < 0) {
+        int v = 1; FILE* f = fopen("/Port/dynstream.txt", "r");
+        if (f) { if (fscanf(f, "%d", &v) != 1) v = 1; fclose(f); }
+        enabled = v != 0 ? 1 : 0;
+        printf("[D3D9] streaming of changing buffers: %s\n", enabled ? "on" : "off");
+    }
+    return enabled == 1;
+}
+static const int POOL = 4096;
+static GLuint pool[2][POOL];
+static unsigned next[2], generation = ~0u;
+// the bytes in a buffer of the pool (0: vertices, 1: indices), bound to the target; every buffer of the pool is written once per round of the pool
+static void upload(int kind, GLenum target, const uint8_t* data, size_t bytes) {
+    if (generation != g_gl_generation) { memset(pool, 0, sizeof(pool)); next[0] = next[1] = 0; generation = g_gl_generation; }
+    GLuint& id = pool[kind][next[kind]++ % POOL];
+    if (id == 0) glGenBuffers(1, &id);
+    glBindBuffer(target, id);
+    glBufferData(target, (GLsizeiptr) bytes, data, GL_STREAM_DRAW);
+    g_stream_uploads++; g_stream_bytes += (unsigned) bytes;
+}
+}
+static void BufferUnlock(GLenum target, GLuint buffer, UINT length, std::vector<uint8_t>& shadow, DynState& st, UINT offset, UINT size, const uint8_t* data) {
+    if (!st.stream && dynstream::on() && length >= 256 && buffer_drawn_this_frame(buffer)) {
+        if (st.hazard_frame != g_buffer_frame) { st.hazard_frame = g_buffer_frame; st.hazards = 0; }
+        if (++st.hazards >= 3) {   // into streaming mode: the CPU copy must be complete, so read the buffer back (once)
+            shadow.assign(length, 0);
+            glBindBuffer(target, buffer);
+            glGetBufferSubData(target, 0, length, shadow.data());
+            st.stream = true; st.dirty = false; g_stream_buffers++;
+            static int logged = 0;
+            if (logged++ < 30) printf("[D3D9] %s buffer %u (%u bytes) is now streamed\n", target == GL_ARRAY_BUFFER ? "vertex" : "index", (unsigned) buffer, (unsigned) length);
+        }
+    }
+    if (st.stream) {
+        if (size && offset + size <= length) {
+            memcpy(shadow.data() + offset, data, size);
+            if (!st.dirty) { st.lo = offset; st.hi = offset + size; st.dirty = true; }
+            else { if (offset < st.lo) st.lo = offset; if (offset + size > st.hi) st.hi = offset + size; }
+        }
+        return;
+    }
+    glBindBuffer(target, buffer);
+    UploadChanged(target, buffer, shadow, length, offset, size, data);
+}
+static void BufferSync(GLenum target, GLuint buffer, std::vector<uint8_t>& shadow, DynState& st) {
+    if (!st.stream || !st.dirty) return;
+    glBindBuffer(target, buffer);
+    glBufferSubData(target, st.lo, st.hi - st.lo, shadow.data() + st.lo);
+    st.dirty = false;
+}
+static size_t index_count_for(D3DPRIMITIVETYPE type, UINT primCount) {
+    switch (type) {
+        case D3DPT_TRIANGLELIST: return (size_t) primCount * 3;
+        case D3DPT_TRIANGLESTRIP: case D3DPT_TRIANGLEFAN: return (size_t) primCount + 2;
+        case D3DPT_LINELIST: return (size_t) primCount * 2;
+        case D3DPT_LINESTRIP: return (size_t) primCount + 1;
+        default: return primCount;
+    }
+}
+
 class D3D9IndexBuffer : public IDirect3DIndexBuffer9 {
 private:
     GLuint m_buffer;
@@ -2528,6 +2604,7 @@ private:
     UINT m_locked_size;
     UINT m_locked_offset;
     std::vector<uint8_t> m_shadow;
+    DynState m_dyn;
 
 public:
     D3D9IndexBuffer(UINT length, D3DFORMAT format) : m_length(length), m_format(format), m_locked_data(nullptr), m_locked_size(0), m_locked_offset(0) {
@@ -2576,9 +2653,8 @@ public:
     virtual HRESULT Unlock() override {
         if (!m_locked_data) return -1;
         
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_buffer);
-        // Note: This implementation re-uploads only the locked part to the correct offset.
-        UploadChanged(GL_ELEMENT_ARRAY_BUFFER, m_buffer, m_shadow, m_length, m_locked_offset, m_locked_size, static_cast<const uint8_t*>(m_locked_data));
+        // (only the locked part, and only what changed, goes to the GL buffer, unless the buffer is streamed)
+        BufferUnlock(GL_ELEMENT_ARRAY_BUFFER, m_buffer, m_length, m_shadow, m_dyn, m_locked_offset, m_locked_size, static_cast<const uint8_t*>(m_locked_data));
         // (no unbinding, see above)
         
         delete[] static_cast<uint8_t*>(m_locked_data);
@@ -2588,6 +2664,10 @@ public:
 
     GLuint GetGLBuffer() const { return m_buffer; }
     D3DFORMAT GetFormat() const { return m_format; }
+    bool IsStreaming() const { return m_dyn.stream; }
+    const uint8_t* ShadowData() const { return m_shadow.empty() ? nullptr : m_shadow.data(); }
+    UINT ShadowSize() const { return (UINT) m_shadow.size(); }
+    void SyncGL() { BufferSync(GL_ELEMENT_ARRAY_BUFFER, m_buffer, m_shadow, m_dyn); }
 };
 
 // D3D9VertexBuffer class
@@ -2599,6 +2679,7 @@ private:
     UINT m_locked_size;
     UINT m_locked_offset;
     std::vector<uint8_t> m_shadow;
+    DynState m_dyn;
     
 public:
     D3D9VertexBuffer(UINT length) : m_length(length), m_locked_data(nullptr), m_locked_size(0), m_locked_offset(0) {
@@ -2610,6 +2691,8 @@ public:
     
     const uint8_t* ShadowData() const { return m_shadow.empty() ? nullptr : m_shadow.data(); }
     UINT ShadowSize() const { return (UINT) m_shadow.size(); }
+    bool IsStreaming() const { return m_dyn.stream; }
+    void SyncGL() { BufferSync(GL_ARRAY_BUFFER, m_buffer, m_shadow, m_dyn); }
 
     unsigned int m_generation = g_gl_generation;
 
@@ -2648,8 +2731,7 @@ public:
     virtual HRESULT Unlock() override {
         if (!m_locked_data) return -1;
         
-        glBindBuffer(GL_ARRAY_BUFFER, m_buffer);
-        UploadChanged(GL_ARRAY_BUFFER, m_buffer, m_shadow, m_length, m_locked_offset, m_locked_size, static_cast<const uint8_t*>(m_locked_data));
+        BufferUnlock(GL_ARRAY_BUFFER, m_buffer, m_length, m_shadow, m_dyn, m_locked_offset, m_locked_size, static_cast<const uint8_t*>(m_locked_data));
         // (no unbinding, see above)
         
         delete[] static_cast<uint8_t*>(m_locked_data);
@@ -2754,6 +2836,7 @@ private:
     
     D3D9Surface* m_backbuffer_surface;
     UINT m_current_vb_offset = 0;      // OffsetInBytes of SetStreamSource
+    D3D9IndexBuffer* m_current_ib_object = nullptr;
     D3D9VertexBuffer* m_current_vb_object = nullptr;   // (diagnostics: where the vertices of the draw are)
     D3D9Surface* m_current_rt;
     D3D9Surface* m_current_ds;
@@ -3149,6 +3232,7 @@ public:
         if (g_stage0_alphaarg2_uniform != -1)
             glUniform1i(g_stage0_alphaarg2_uniform, g_texture_stage_states[0][D3DTSS_ALPHAARG2]);
 
+        if (m_current_vb_object) m_current_vb_object->SyncGL();   // (a streamed buffer is read from the GL buffer here)
         glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer); NOTE_BUFFER_DRAWN(m_current_vertex_buffer);
 
         // FVF Parsing
@@ -4626,7 +4710,9 @@ void LogDrawState() {
             D3D9IndexBuffer* ib = static_cast<D3D9IndexBuffer*>(pIndexData);
             m_current_index_buffer = ib->GetGLBuffer();
             m_current_ib_format = ib->GetFormat();
+            m_current_ib_object = ib;
         } else {
+            m_current_ib_object = nullptr;
             m_current_index_buffer = 0;
             m_current_ib_format = D3DFMT_INDEX16;
         }
@@ -5248,7 +5334,6 @@ void LogDrawState() {
         // Bind buffers
         glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_current_index_buffer);
-        NOTE_BUFFER_DRAWN(m_current_vertex_buffer); NOTE_BUFFER_DRAWN(m_current_index_buffer);
         
         // Dynamic FVF Parsing
         bool has_xyz = (g_current_fvf & D3DFVF_XYZ) != 0;
@@ -5274,8 +5359,29 @@ void LogDrawState() {
         // Use stored stride if valid
         if (m_current_stride > 0) stride = m_current_stride;
 
+        // Streamed buffers (see dynstream): the bytes this draw reads go to buffers of their own
+        bool vb_streamed = false, ib_streamed = false;
+        if (dynstream::on()) {
+            if (m_current_ib_object && m_current_ib_object->IsStreaming()) {
+                const size_t istride = (m_current_ib_format == D3DFMT_INDEX32) ? 4 : 2, off = (size_t) startIndex * istride, bytes = index_count_for(PrimitiveType, primCount) * istride;
+                const uint8_t* data = m_current_ib_object->ShadowData();
+                if (data && bytes && off + bytes <= m_current_ib_object->ShadowSize()) { dynstream::upload(1, GL_ELEMENT_ARRAY_BUFFER, data + off, bytes); ib_streamed = true; }
+                else m_current_ib_object->SyncGL();
+            }
+            if (m_current_vb_object && m_current_vb_object->IsStreaming()) {
+                // (the vertices from BaseVertexIndex to the last one the indices can reach; the indices count from BaseVertexIndex)
+                const size_t first = (size_t) m_current_vb_offset + (size_t) BaseVertexIndex * stride, bytes = ((size_t) MinVertexIndex + NumVertices) * stride;
+                const uint8_t* data = m_current_vb_object->ShadowData();
+                if (BaseVertexIndex >= 0 && data && NumVertices > 0 && stride > 0 && bytes <= (size_t) 1 << 20 && first + bytes <= m_current_vb_object->ShadowSize()) {
+                    dynstream::upload(0, GL_ARRAY_BUFFER, data + first, bytes); vb_streamed = true;
+                } else m_current_vb_object->SyncGL();
+            }
+        }
+        if (!vb_streamed) { glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer); NOTE_BUFFER_DRAWN(m_current_vertex_buffer); }
+        if (!ib_streamed) { glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_current_index_buffer); NOTE_BUFFER_DRAWN(m_current_index_buffer); }
+
         // BaseVertexIndex support
-        size_t base_offset = BaseVertexIndex * stride + m_current_vb_offset;
+        size_t base_offset = vb_streamed ? 0 : BaseVertexIndex * stride + m_current_vb_offset;
 
         // Enable/Set Pointers with safety guards
         if ((has_xyz || has_xyzrhw) && g_position_location != -1) {
@@ -5397,7 +5503,7 @@ void LogDrawState() {
         bool is_index32 = (m_current_ib_format == D3DFMT_INDEX32);
         GLenum gl_index_type = is_index32 ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
         size_t index_stride = is_index32 ? 4 : 2;
-        void* indices = (void*)(uintptr_t)(startIndex * index_stride);
+        void* indices = ib_streamed ? nullptr : (void*)(uintptr_t)(startIndex * index_stride);
 
         glDrawElements(gl_primitive_type, index_count, gl_index_type, indices);
 
