@@ -108,6 +108,45 @@ EM_JS(int, srw_present_frame, (int counter_pointer), {
 static volatile int g_frames_in_flight = 0;
 static unsigned int g_gl_generation = 0;   // counts the WebGL contexts: objects of an older one are gone
 
+// State the wrapper sets itself and restores later: the framebuffer bindings, the color mask, the clear color. Every change goes through these functions.
+static GLboolean g_cached_scissor_test = GL_FALSE;
+namespace fbstate {
+static GLuint read_fbo = 0, draw_fbo = 0;
+static GLboolean color_mask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
+static GLfloat clear_color[4] = { 0, 0, 0, 0 };
+static unsigned int generation = 0;
+static void check_generation() {
+    if (generation == g_gl_generation) return;
+    generation = g_gl_generation;
+    read_fbo = draw_fbo = 0;
+    for (int i = 0; i < 4; i++) { color_mask[i] = GL_TRUE; clear_color[i] = 0; }
+}
+}
+static void srw_glBindFramebuffer(GLenum target, GLuint framebuffer) {
+    fbstate::check_generation();
+    if (target == GL_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER) fbstate::read_fbo = framebuffer;
+    if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER) fbstate::draw_fbo = framebuffer;
+    glBindFramebuffer(target, framebuffer);
+}
+static void srw_glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
+    fbstate::check_generation();
+    fbstate::color_mask[0] = r; fbstate::color_mask[1] = g; fbstate::color_mask[2] = b; fbstate::color_mask[3] = a;
+    glColorMask(r, g, b, a);
+}
+static void srw_glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
+    fbstate::check_generation();
+    fbstate::clear_color[0] = r; fbstate::clear_color[1] = g; fbstate::clear_color[2] = b; fbstate::clear_color[3] = a;
+    glClearColor(r, g, b, a);
+}
+static void forget_framebuffer(GLuint framebuffer) {   // (GL unbinds a deleted framebuffer)
+    fbstate::check_generation();
+    if (fbstate::read_fbo == framebuffer) fbstate::read_fbo = 0;
+    if (fbstate::draw_fbo == framebuffer) fbstate::draw_fbo = 0;
+}
+#define glBindFramebuffer srw_glBindFramebuffer
+#define glColorMask srw_glColorMask
+#define glClearColor srw_glClearColor
+
 // What the wrapper did in a frame (all builds, a few additions per draw): the `gfx` report and the perf line of the diagnostics build. The
 // frame that was just presented is kept (g_stats_last, read by the report from another thread: plain numbers, a torn read is harmless).
 struct FrameStats {
@@ -126,8 +165,7 @@ struct FrameStats {
     unsigned lit_draws;              // draws with the lighting on
     unsigned texgen_draws;           // draws where a stage generates its coordinates (camera space normal, position, reflection vector, sphere map)
 };
-// The frame of the last draw that read each GL buffer (by name), to tell an update that comes after such a draw (a hazard: the update of a buffer that a draw
-// of the same frame has read makes ANGLE copy or wait, about 0.13 ms each whatever the size; see SRW-web/bench) from one that does not.
+// The frame of the last draw that read each GL buffer, by name: an update of a buffer drawn from in the same frame is a hazard.
 static unsigned long long g_buffer_frame = 1;
 static std::vector<unsigned long long> g_buffer_drawn_frame;
 static void note_buffer_drawn(GLuint buffer) {
@@ -136,17 +174,14 @@ static void note_buffer_drawn(GLuint buffer) {
     g_buffer_drawn_frame[buffer] = g_buffer_frame;
 }
 static bool buffer_drawn_this_frame(GLuint buffer) { return buffer != 0 && buffer < g_buffer_drawn_frame.size() && g_buffer_drawn_frame[buffer] == g_buffer_frame; }
-#define NOTE_BUFFER_DRAWN(b) note_buffer_drawn(b)
-static unsigned g_stream_uploads, g_stream_bytes, g_stream_buffers;   // streaming of changing buffers (see dynstream): uploads and bytes in the window, buffers in that mode
+static unsigned g_stream_uploads, g_stream_bytes, g_stream_buffers;   // streamed uploads and bytes in the window, buffers in streaming mode
 #ifdef SRW_DIAGNOSTICS
-// Updates of GL buffers (the Unlock of a Direct3D buffer that really sends bytes) in the window, and how many of them are a hazard: the buffer was read by a draw
-// earlier in the same frame, which makes ANGLE (Chrome) copy or wait (about 0.13 ms each, whatever the size: see SRW-web/bench).
+// Updates of GL buffers in the window (the Unlock of a Direct3D buffer that sends bytes), and how many of them are a hazard.
 static struct BufferUpdateStats {
     unsigned updates, hazards, bytes, vb_updates, vb_hazards, ib_updates, ib_hazards, size_class[5], max_bytes;
-    unsigned long long buffers_seen_mask;
 } g_buffer_updates;
 static void note_buffer_update(GLenum target, GLuint buffer, size_t bytes) {
-    const bool hazard = buffer != 0 && buffer < g_buffer_drawn_frame.size() && g_buffer_drawn_frame[buffer] == g_buffer_frame;
+    const bool hazard = buffer_drawn_this_frame(buffer);
     g_buffer_updates.updates++; g_buffer_updates.bytes += (unsigned) bytes;
     if (hazard) g_buffer_updates.hazards++;
     if (target == GL_ARRAY_BUFFER) { g_buffer_updates.vb_updates++; if (hazard) g_buffer_updates.vb_hazards++; }
@@ -268,14 +303,12 @@ static bool present_pixels_frame(int width, int height) {
     // the alpha channel reached the page's canvas (the movie's margins have alpha 0: they showed as bright lines at the edges of the
     // scaled canvas). A clear of the alpha channel alone does it on the GPU (it was a pass over every pixel here).
     {
-        GLboolean mask[4];
-        GLfloat clear[4];
-        GLint draw_fb = 0;
-        GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+        fbstate::check_generation();
+        GLboolean mask[4] = { fbstate::color_mask[0], fbstate::color_mask[1], fbstate::color_mask[2], fbstate::color_mask[3] };
+        GLfloat clear[4] = { fbstate::clear_color[0], fbstate::clear_color[1], fbstate::clear_color[2], fbstate::clear_color[3] };
+        const GLuint draw_fb = fbstate::draw_fbo;
+        const GLboolean scissor = g_cached_scissor_test;
 
-        glGetBooleanv(GL_COLOR_WRITEMASK, mask);
-        glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
-        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_fb);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         if (scissor) glDisable(GL_SCISSOR_TEST);
         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
@@ -284,7 +317,7 @@ static bool present_pixels_frame(int width, int height) {
         glClearColor(clear[0], clear[1], clear[2], clear[3]);
         glColorMask(mask[0], mask[1], mask[2], mask[3]);
         if (scissor) glEnable(GL_SCISSOR_TEST);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint) draw_fb);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fb);
     }
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -431,8 +464,7 @@ static std::map<GLuint, Program> programs;
 static GLuint current_program = 0, array_buffer = 0, element_buffer = 0;
 // textures: the active unit, what each unit has bound per target (2D, cube), the parameters of every texture object; the enabled attribute arrays
 static GLenum active_unit = GL_TEXTURE0;   // the unit GL has active
-// glActiveTexture is lazy inside the per-draw texture loop (lazy_units): logical_unit is the unit the program asked for, active_unit what GL has; a call that
-// really reaches GL first brings GL to the logical unit (sync_unit). Outside the loop the two are always the same.
+// In the per-draw texture loop (lazy_units) glActiveTexture only notes the logical unit: every call that depends on the unit must call sync_unit first.
 static GLenum logical_unit = GL_TEXTURE0;
 static bool lazy_units = false;
 static GLuint bound_2d[32], bound_cube[32];
@@ -553,7 +585,7 @@ static void srw_glActiveTexture(GLenum unit) {
     glcache::check_generation();
     if (!(glcache::parts & 8)) { glcache::active_unit = glcache::logical_unit = unit; glActiveTexture(unit); return; }
     glcache::logical_unit = unit;
-    if (glcache::lazy_units || unit == glcache::active_unit) return;   // (lazy: a call that needs the unit sets it first)
+    if (glcache::lazy_units || unit == glcache::active_unit) return;
     glcache::active_unit = unit;
     glActiveTexture(unit);
 }
@@ -1342,7 +1374,6 @@ static bool g_cached_vertex_attribs[4] = {false};  // pos, color, tex0, tex1
 
 // Viewport and Scissor state caching (to avoid glGet* calls)
 // (g_cached_viewport is defined further up)
-static GLboolean g_cached_scissor_test = GL_FALSE;
 static GLint g_cached_scissor_box[4] = {0, 0, 0, 0};  // Overwritten by first SetScissorRect
 
 static DWORD g_texture_stage_states[8][33];
@@ -1887,7 +1918,7 @@ static int g_wanted_samples = 0;   // what the program asked for (D3DPRESENT_PAR
 static int g_back_depth_bits = 16, g_back_stencil_bits = 0;   // of the framebuffer that is drawn into (16 and 0: Emscripten's own, see above)
 
 static void back_buffer_release() {
-    if (g_back_fbo != 0) glDeleteFramebuffers(1, &g_back_fbo);
+    if (g_back_fbo != 0) { forget_framebuffer(g_back_fbo); glDeleteFramebuffers(1, &g_back_fbo); }
     if (g_back_color_rb != 0) glDeleteRenderbuffers(1, &g_back_color_rb);
     if (g_back_depth_rb != 0) glDeleteRenderbuffers(1, &g_back_depth_rb);
     g_back_fbo = g_back_color_rb = g_back_depth_rb = 0;
@@ -1951,16 +1982,15 @@ static GLuint back_buffer_read_fbo() { return g_back_samples == 0 ? g_back_fbo :
 // the resolve of the samples with more
 static void back_buffer_resolve() {
     if (g_back_fbo == 0) return;
-    GLint read = 0, draw = 0;
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+    fbstate::check_generation();
+    const GLuint read = fbstate::read_fbo, draw = fbstate::draw_fbo;
     glBindFramebuffer(GL_READ_FRAMEBUFFER, g_back_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     if (g_cached_scissor_test) glDisable(GL_SCISSOR_TEST);   // (the scissor box limits blits too)
     glBlitFramebuffer(0, 0, g_back_width, g_back_height, 0, 0, g_back_width, g_back_height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     if (g_cached_scissor_test) glEnable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint) read);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint) draw);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
 }
 // The report of the `gfx` command (and of the log, category perf): what the wrapper does that decides whether alpha to coverage and the
 // anisotropic filter take effect, from the last presented frame. Called from any thread; `window` takes the averages of the frames since the
@@ -2401,14 +2431,14 @@ HRESULT D3D9Surface::LockRect(D3DLOCKED_RECT* pLockedRect, const RECT* pRect, DW
                 read_generation = g_gl_generation;
             }
             const size_t w = (size_t) (r.right - r.left), h = (size_t) (r.bottom - r.top);
-            GLint previous_read = 0;
-            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read);
+            fbstate::check_generation();
+            const GLuint previous_read = fbstate::read_fbo;
             glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
             glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_gl_object, 0);
             m_lock_buffer.resize(w * h * 4);
             glPixelStorei(GL_PACK_ALIGNMENT, 1);
             glReadPixels(r.left, r.top, (GLsizei) w, (GLsizei) h, GL_RGBA, GL_UNSIGNED_BYTE, m_lock_buffer.data());
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint) previous_read);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, previous_read);
             for (size_t i = 0; i < w * h; i++) {   // R, G, B, A -> B, G, R, opaque (as the back buffer's read)
                 uint8_t* p = m_lock_buffer.data() + i * 4;
                 const uint8_t red = p[0];
@@ -2435,14 +2465,13 @@ HRESULT D3D9Surface::LockRect(D3DLOCKED_RECT* pLockedRect, const RECT* pRect, DW
             if (r.right <= r.left || r.bottom <= r.top || m_lock_buffer_in_use) return D3DERR_INVALIDCALL;
             const size_t w = (size_t) (r.right - r.left), h = (size_t) (r.bottom - r.top);
             std::vector<uint8_t> rows(w * h * 4);
-            GLint previous_read = 0;
-
             if (g_back_samples > 0) back_buffer_resolve();
-            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read);
+            fbstate::check_generation();
+            const GLuint previous_read = fbstate::read_fbo;
             glBindFramebuffer(GL_READ_FRAMEBUFFER, back_buffer_read_fbo());
             glPixelStorei(GL_PACK_ALIGNMENT, 1);
             glReadPixels(r.left, (GLint) m_height - r.bottom, (GLsizei) w, (GLsizei) h, GL_RGBA, GL_UNSIGNED_BYTE, rows.data());
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint) previous_read);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, previous_read);
             m_lock_buffer.resize(w * h * 4);
             for (size_t y = 0; y < h; y++) {
                 const uint8_t* from = rows.data() + (h - 1 - y) * w * 4;   // GL rows come bottom up
@@ -2522,15 +2551,8 @@ static void UploadChanged(GLenum target, GLuint buffer, std::vector<uint8_t>& sh
     memcpy(old + first, data + first, last - first);
 }
 
-// Streaming of changing buffers.
-//
-// A Direct3D game that draws with dynamic buffers writes the vertices and indices of a draw (Lock, write, Unlock) and then draws from them, many times a frame, into
-// the same few buffers. Sending each write to the GL buffer (glBufferSubData) after draws of the frame have read it makes ANGLE copy or wait: about 0.13 ms each,
-// 230 of them a frame, 40 ms (SRW-web/bench: 221 ms for 450 draws with two such writes each, 3.4 ms when every draw gets a write-once buffer).
-//
-// A buffer that is written three times in a frame after being drawn from goes into streaming mode: its writes go to its CPU copy only, and each draw uploads the bytes
-// it reads (the range of vertices and the range of indices) with glBufferData into a buffer of a pool, used for this draw only. A draw that cannot be streamed, or
-// another way of reading the buffer, first brings the GL buffer up to date (SyncGL).
+// Streaming of changing buffers: a buffer written three times in a frame after being drawn from keeps its writes in the CPU copy, and each indexed draw uploads the
+// bytes it reads into a buffer of a pool. The GL copy of a streamed buffer is stale until SyncGL.
 struct DynState { bool stream = false, dirty = false; unsigned hazards = 0; unsigned long long hazard_frame = 0; UINT lo = 0, hi = 0; };
 namespace dynstream {
 static int enabled = -1;   // /Port/dynstream.txt (the page's setting dynStream): 0 turns it off
@@ -2546,7 +2568,7 @@ static bool on() {
 static const int POOL = 4096;
 static GLuint pool[2][POOL];
 static unsigned next[2], generation = ~0u;
-// the bytes in a buffer of the pool (0: vertices, 1: indices), bound to the target; every buffer of the pool is written once per round of the pool
+// the bytes in the next buffer of the pool (0: vertices, 1: indices), left bound to the target
 static void upload(int kind, GLenum target, const uint8_t* data, size_t bytes) {
     if (generation != g_gl_generation) { memset(pool, 0, sizeof(pool)); next[0] = next[1] = 0; generation = g_gl_generation; }
     GLuint& id = pool[kind][next[kind]++ % POOL];
@@ -2585,6 +2607,20 @@ static void BufferSync(GLenum target, GLuint buffer, std::vector<uint8_t>& shado
     glBufferSubData(target, st.lo, st.hi - st.lo, shadow.data() + st.lo);
     st.dirty = false;
 }
+#ifdef SRW_DIAGNOSTICS
+// A streamed draw uploads the vertices up to the declared range: reports an index that reaches past it
+static void check_declared_vertex_range(const uint8_t* indices, size_t count, bool index32, UINT min_vertex, UINT num_vertices) {
+    unsigned highest = 0;
+    for (size_t i = 0; i < count; i++) {
+        const unsigned v = index32 ? ((const uint32_t*) indices)[i] : ((const uint16_t*) indices)[i];
+        if (v > highest) highest = v;
+    }
+    if (highest >= (unsigned long long) min_vertex + num_vertices) {
+        static int logged = 0;
+        if (logged++ < 30) printf("[D3D9] streamed draw: index %u is past the declared vertices (%u from %u)\n", highest, (unsigned) num_vertices, (unsigned) min_vertex);
+    }
+}
+#endif
 static size_t index_count_for(D3DPRIMITIVETYPE type, UINT primCount) {
     switch (type) {
         case D3DPT_TRIANGLELIST: return (size_t) primCount * 3;
@@ -2973,6 +3009,7 @@ public:
 
         // Clean up GL resources owned by this device
         if (g_fbo) {
+            forget_framebuffer(g_fbo);
             glDeleteFramebuffers(1, &g_fbo);
             g_fbo = 0;
         }
@@ -3232,8 +3269,8 @@ public:
         if (g_stage0_alphaarg2_uniform != -1)
             glUniform1i(g_stage0_alphaarg2_uniform, g_texture_stage_states[0][D3DTSS_ALPHAARG2]);
 
-        if (m_current_vb_object) m_current_vb_object->SyncGL();   // (a streamed buffer is read from the GL buffer here)
-        glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer); NOTE_BUFFER_DRAWN(m_current_vertex_buffer);
+        if (m_current_vb_object) m_current_vb_object->SyncGL();   // (this draw reads the GL buffer: the pending writes of a streamed buffer are sent first)
+        glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer); note_buffer_drawn(m_current_vertex_buffer);
 
         // FVF Parsing
         bool has_xyz = (g_current_fvf & D3DFVF_XYZ) != 0;
@@ -3373,13 +3410,12 @@ public:
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, blit_draw_fbo);
         if (!dst->m_is_backbuffer) attach(GL_DRAW_FRAMEBUFFER, dst);
 
-        // glCheckFramebufferStatus is a synchronous query: in Chrome the thread waits until the GPU process has decoded everything queued before it (a frame's draws:
-        // 20-40 ms, twice per frame here). A set-up that was found complete is not asked about again (the key has what decides it: the framebuffers, the attached objects, their sizes).
-        static std::set<std::array<uint64_t, 12> > complete_blits;
-        const std::array<uint64_t, 12> blit_key = { (uint64_t) blit_read_fbo, (uint64_t) blit_draw_fbo, (uint64_t) src->m_gl_object, (uint64_t) dst->m_gl_object,
+        // a set-up found complete is not checked again
+        static std::set<std::array<uint64_t, 14> > complete_blits;
+        const std::array<uint64_t, 14> blit_key = { (uint64_t) blit_read_fbo, (uint64_t) blit_draw_fbo, (uint64_t) src->m_gl_object, (uint64_t) dst->m_gl_object,
             (uint64_t) src->m_width, (uint64_t) src->m_height, (uint64_t) dst->m_width, (uint64_t) dst->m_height,
             (uint64_t) (src->m_is_renderbuffer ? 1 : 0) | ((uint64_t) (dst->m_is_renderbuffer ? 1 : 0) << 1) | ((uint64_t) (src->m_is_backbuffer ? 1 : 0) << 2) | ((uint64_t) (dst->m_is_backbuffer ? 1 : 0) << 3),
-            (uint64_t) g_back_samples, (uint64_t) g_gl_generation, (uint64_t) (uintptr_t) g_back_fbo };
+            (uint64_t) g_back_samples, (uint64_t) g_gl_generation, (uint64_t) (uintptr_t) g_back_fbo, (uint64_t) src->m_format, (uint64_t) dst->m_format };
         GLenum read_status = GL_FRAMEBUFFER_COMPLETE, draw_status = GL_FRAMEBUFFER_COMPLETE;
         if (!complete_blits.count(blit_key)) {
             read_status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
@@ -3863,7 +3899,7 @@ void UploadTextureStages(const D3DMATRIX& view_model) {
     if (g_tc_matrix_uniform != -1) glUniformMatrix4fv(g_tc_matrix_uniform, 8, GL_FALSE, &tc_matrix[0][0]);
     gl_set_matrix_uniform(g_view_model_uniform, &view_model);
     const GLint samplers[8] = { g_texture_uniform, g_texture_lm_uniform, g_texture2_uniform, g_texture3_uniform, g_texture4_uniform, g_texture5_uniform, g_texture6_uniform, g_texture7_uniform };
-    glcache::lazy_units = true;   // (the unit switches of the loop reach GL only for the binds and parameters that are really made)
+    glcache::lazy_units = true;
     for (int s = 0; s < 8; s++) {
         glActiveTexture(GL_TEXTURE0 + s);
         if ((s < 4 && tables[10][s]) || (ps_on && g_texture_stages[s] != 0)) {
@@ -5359,7 +5395,7 @@ void LogDrawState() {
         // Use stored stride if valid
         if (m_current_stride > 0) stride = m_current_stride;
 
-        // Streamed buffers (see dynstream): the bytes this draw reads go to buffers of their own
+        // streamed buffers: the bytes this draw reads go to buffers of the pool
         bool vb_streamed = false, ib_streamed = false;
         if (dynstream::on()) {
             if (m_current_ib_object && m_current_ib_object->IsStreaming()) {
@@ -5377,8 +5413,15 @@ void LogDrawState() {
                 } else m_current_vb_object->SyncGL();
             }
         }
-        if (!vb_streamed) { glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer); NOTE_BUFFER_DRAWN(m_current_vertex_buffer); }
-        if (!ib_streamed) { glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_current_index_buffer); NOTE_BUFFER_DRAWN(m_current_index_buffer); }
+#ifdef SRW_DIAGNOSTICS
+        if (vb_streamed && m_current_ib_object && m_current_ib_object->ShadowData()) {
+            const size_t istride = (m_current_ib_format == D3DFMT_INDEX32) ? 4 : 2, off = (size_t) startIndex * istride, count = index_count_for(PrimitiveType, primCount);
+            if (off + count * istride <= m_current_ib_object->ShadowSize())
+                check_declared_vertex_range(m_current_ib_object->ShadowData() + off, count, istride == 4, MinVertexIndex, NumVertices);
+        }
+#endif
+        if (!vb_streamed) { glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer); note_buffer_drawn(m_current_vertex_buffer); }
+        if (!ib_streamed) { glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_current_index_buffer); note_buffer_drawn(m_current_index_buffer); }
 
         // BaseVertexIndex support
         size_t base_offset = vb_streamed ? 0 : BaseVertexIndex * stride + m_current_vb_offset;
