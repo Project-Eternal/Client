@@ -710,6 +710,7 @@ static void run_game_calls(void)
     pthread_mutex_unlock(&game_call_lock);
 }
 
+static uint8_t mouse_held;
 #ifdef SRW_DIAGNOSTICS
 /* Scripted input for runs without a person (Node): /autoinput.txt, one command per line, given to the main window from a thread of its own:
    wait MS | key VK (hex: 0d Enter, 09 Tab, 1b Escape...) | type TEXT | say TEXT (Enter, the text, Enter: chat and /script) | log TEXT |
@@ -722,7 +723,6 @@ static EM_BOOL on_focus(int type, const EmscriptenFocusEvent *e, void *user);
 static EM_BOOL on_visibility(int type, const EmscriptenVisibilityChangeEvent *e, void *user);
 static EM_BOOL on_pointer_lock(int type, const EmscriptenPointerlockChangeEvent *e, void *user);
 static void release_input(const char *why);
-static uint8_t mouse_held;
 static void autoinput_clipboard(const char *text, int set);
 static void inject_text(const char *utf8, uint32_t lparam);
 static int utf8_next(const unsigned char *p, uint32_t *code);
