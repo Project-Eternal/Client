@@ -400,10 +400,14 @@ struct Program { std::vector<std::vector<uint32_t>> values; };   // by location:
 static std::map<GLuint, Program> programs;
 static GLuint current_program = 0, array_buffer = 0, element_buffer = 0;
 // textures: the active unit, what each unit has bound per target (2D, cube), the parameters of every texture object; the enabled attribute arrays
-static GLenum active_unit = GL_TEXTURE0;
+static GLenum active_unit = GL_TEXTURE0;   // the unit GL has active
+// glActiveTexture is lazy inside the per-draw texture loop (lazy_units): logical_unit is the unit the program asked for, active_unit what GL has; a call that
+// really reaches GL first brings GL to the logical unit (sync_unit). Outside the loop the two are always the same.
+static GLenum logical_unit = GL_TEXTURE0;
+static bool lazy_units = false;
 static GLuint bound_2d[32], bound_cube[32];
 // by texture name (Emscripten's names are small consecutive numbers): wrap S, wrap T, mag filter, min filter (0x7fffffff: not known)
-static std::vector<std::array<GLint, 4>> texture_params;
+static std::vector<std::array<GLint, 5>> texture_params;   // (the fifth: the anisotropy, as the bits of the float)
 static int param_slot(GLenum pname) {
     return pname == GL_TEXTURE_WRAP_S ? 0 : pname == GL_TEXTURE_WRAP_T ? 1 : pname == GL_TEXTURE_MAG_FILTER ? 2 : pname == GL_TEXTURE_MIN_FILTER ? 3 : -1;
 }
@@ -411,6 +415,10 @@ static void forget_texture(GLuint texture) {
     if (texture < texture_params.size()) texture_params[texture].fill(0x7fffffff);
 }
 static bool attrib_known[32], attrib_enabled[32];
+// the constant value (vertexAttrib*) of each attribute, as the program last set it (forgotten when an array of the attribute is enabled), and the front face
+static bool attrib_const_known[32];
+static float attrib_const[32][4];
+static GLenum front_face = 0;
 static unsigned int generation = ~0u;
 static bool enabled = true;
 static int parts = 31;   // /glcache.txt: 1 uniforms, 2 the program, 4 the buffer bindings, 8 textures (unit, bindings, parameters), 16 attribute arrays (0: none). Keyed on the context: reset by g_gl_generation alone, a new context's binds were skipped (same names as the old one's) and Dalaran's loading screen stayed for good
@@ -433,7 +441,10 @@ static void check_generation() {
         context = now;
         programs.clear();
         current_program = array_buffer = element_buffer = 0;
-        active_unit = GL_TEXTURE0;
+        active_unit = logical_unit = GL_TEXTURE0;
+        lazy_units = false;
+        memset(attrib_const_known, 0, sizeof(attrib_const_known));
+        front_face = 0;
         memset(bound_2d, 0, sizeof(bound_2d));
         memset(bound_cube, 0, sizeof(bound_cube));
         texture_params.clear();
@@ -455,6 +466,18 @@ static bool same(GLint location, const void* data, size_t words) {
     return false;
 }
 static void forget_program(GLuint program) { check_generation(); programs.erase(program); }
+static void sync_unit() {
+    if (logical_unit != active_unit) { active_unit = logical_unit; glActiveTexture(logical_unit); }
+}
+// true when attribute `index` already has this constant value (noted as its value now otherwise)
+static bool attrib_const_same(GLuint index, float a, float b, float c, float d) {
+    check_generation();
+    if (!(parts & 16) || index >= 32) return false;
+    float* v = attrib_const[index];
+    if (attrib_const_known[index] && v[0] == a && v[1] == b && v[2] == c && v[3] == d) return true;
+    attrib_const_known[index] = true; v[0] = a; v[1] = b; v[2] = c; v[3] = d;
+    return false;
+}
 }
 
 static void srw_glUseProgram(GLuint program) {
@@ -498,12 +521,14 @@ static void srw_glUniformMatrix4fv(GLint l, GLsizei n, GLboolean t, const GLfloa
 }
 static void srw_glActiveTexture(GLenum unit) {
     glcache::check_generation();
-    if ((glcache::parts & 8) && unit == glcache::active_unit) return;
+    if (!(glcache::parts & 8)) { glcache::active_unit = glcache::logical_unit = unit; glActiveTexture(unit); return; }
+    glcache::logical_unit = unit;
+    if (glcache::lazy_units || unit == glcache::active_unit) return;   // (lazy: a call that needs the unit sets it first)
     glcache::active_unit = unit;
     glActiveTexture(unit);
 }
 static GLuint* bound_slot(GLenum target) {
-    unsigned u = (unsigned) (glcache::active_unit - GL_TEXTURE0);
+    unsigned u = (unsigned) (glcache::logical_unit - GL_TEXTURE0);
     if (u >= 32) return nullptr;
     return target == GL_TEXTURE_2D ? &glcache::bound_2d[u] : target == GL_TEXTURE_CUBE_MAP ? &glcache::bound_cube[u] : nullptr;
 }
@@ -512,6 +537,7 @@ static void srw_glBindTexture(GLenum target, GLuint texture) {
     GLuint* slot = bound_slot(target);
     if (slot && (glcache::parts & 8) && *slot == texture) return;
     if (slot) *slot = texture;
+    glcache::sync_unit();
     glBindTexture(target, texture);
 }
 static void srw_glTexParameteri(GLenum target, GLenum pname, GLint value) {
@@ -528,7 +554,38 @@ static void srw_glTexParameteri(GLenum target, GLenum pname, GLint value) {
         if (known == value) return;
         known = value;
     }
+    glcache::sync_unit();
     glTexParameteri(target, pname, value);
+}
+#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
+#endif
+static void srw_glTexParameterf(GLenum target, GLenum pname, GLfloat value) {   // (the anisotropy: cached like the integer parameters)
+    glcache::check_generation();
+    GLuint* slot = bound_slot(target);
+    if (slot && *slot != 0 && pname == GL_TEXTURE_MAX_ANISOTROPY_EXT && (glcache::parts & 8) && *slot < 1u << 20) {
+        if (*slot >= glcache::texture_params.size()) {
+            size_t old = glcache::texture_params.size();
+            glcache::texture_params.resize((size_t) *slot + 1024);
+            for (size_t i = old; i < glcache::texture_params.size(); i++) glcache::texture_params[i].fill(0x7fffffff);
+        }
+        GLint bits;
+        memcpy(&bits, &value, sizeof(bits));
+        GLint& known = glcache::texture_params[*slot][4];
+        if (known == bits) return;
+        known = bits;
+    }
+    glcache::sync_unit();
+    glTexParameterf(target, pname, value);
+}
+static void srw_glVertexAttrib2f(GLuint i, GLfloat a, GLfloat b) { if (!glcache::attrib_const_same(i, a, b, 0.0f, 1.0f)) glVertexAttrib2f(i, a, b); }
+static void srw_glVertexAttrib3f(GLuint i, GLfloat a, GLfloat b, GLfloat c) { if (!glcache::attrib_const_same(i, a, b, c, 1.0f)) glVertexAttrib3f(i, a, b, c); }
+static void srw_glVertexAttrib4f(GLuint i, GLfloat a, GLfloat b, GLfloat c, GLfloat d) { if (!glcache::attrib_const_same(i, a, b, c, d)) glVertexAttrib4f(i, a, b, c, d); }
+static void srw_glFrontFace(GLenum mode) {
+    glcache::check_generation();
+    if (glcache::enabled && mode == glcache::front_face) return;
+    glcache::front_face = mode;
+    glFrontFace(mode);
 }
 static void cache_glDeleteTextures(GLsizei n, const GLuint* textures) {   // (in front of the counting srw_glDeleteTextures above)
     glcache::check_generation();
@@ -545,7 +602,7 @@ static void srw_glEnableVertexAttribArray(GLuint index) {
     if (index == (GLuint) -1) return;   // (an attribute the shader compiler left out: GL ignores it, Emscripten's emulation throws)
     glcache::check_generation();
     if (index < 32 && (glcache::parts & 16) && glcache::attrib_known[index] && glcache::attrib_enabled[index]) return;
-    if (index < 32) { glcache::attrib_known[index] = true; glcache::attrib_enabled[index] = true; }
+    if (index < 32) { glcache::attrib_known[index] = true; glcache::attrib_enabled[index] = true; glcache::attrib_const_known[index] = false; }
     glEnableVertexAttribArray(index);
 }
 static void srw_glDisableVertexAttribArray(GLuint index) {
@@ -562,6 +619,11 @@ static void srw_glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLb
 #define glActiveTexture srw_glActiveTexture
 #define glBindTexture srw_glBindTexture
 #define glTexParameteri srw_glTexParameteri
+#define glTexParameterf srw_glTexParameterf
+#define glVertexAttrib2f srw_glVertexAttrib2f
+#define glVertexAttrib3f srw_glVertexAttrib3f
+#define glVertexAttrib4f srw_glVertexAttrib4f
+#define glFrontFace srw_glFrontFace
 #undef glDeleteTextures
 #define glDeleteTextures cache_glDeleteTextures
 #define glEnableVertexAttribArray srw_glEnableVertexAttribArray
@@ -3172,13 +3234,27 @@ public:
             if (surface->m_is_renderbuffer) glFramebufferRenderbuffer(target, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, surface->m_gl_object);
             else glFramebufferTexture2D(target, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, surface->m_gl_object, 0);
         };
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, src->m_is_backbuffer ? back_buffer_read_fbo() : blit_fbo[0]);
+        const GLuint blit_read_fbo = src->m_is_backbuffer ? back_buffer_read_fbo() : blit_fbo[0];
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, blit_read_fbo);
         if (!src->m_is_backbuffer) attach(GL_READ_FRAMEBUFFER, src);
         // (into the back buffer: our own framebuffer when it has one sample, a blit into a multisampled one is not allowed; with more samples it lands in framebuffer 0)
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst->m_is_backbuffer ? (g_back_samples == 0 ? g_back_fbo : 0) : blit_fbo[1]);
+        const GLuint blit_draw_fbo = dst->m_is_backbuffer ? (g_back_samples == 0 ? g_back_fbo : 0) : blit_fbo[1];
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, blit_draw_fbo);
         if (!dst->m_is_backbuffer) attach(GL_DRAW_FRAMEBUFFER, dst);
 
-        GLenum read_status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER), draw_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        // glCheckFramebufferStatus is a synchronous query: in Chrome the thread waits until the GPU process has decoded everything queued before it (a frame's draws:
+        // 20-40 ms, twice per frame here). A set-up that was found complete is not asked about again (the key has what decides it: the framebuffers, the attached objects, their sizes).
+        static std::set<std::array<uint64_t, 12> > complete_blits;
+        const std::array<uint64_t, 12> blit_key = { (uint64_t) blit_read_fbo, (uint64_t) blit_draw_fbo, (uint64_t) src->m_gl_object, (uint64_t) dst->m_gl_object,
+            (uint64_t) src->m_width, (uint64_t) src->m_height, (uint64_t) dst->m_width, (uint64_t) dst->m_height,
+            (uint64_t) (src->m_is_renderbuffer ? 1 : 0) | ((uint64_t) (dst->m_is_renderbuffer ? 1 : 0) << 1) | ((uint64_t) (src->m_is_backbuffer ? 1 : 0) << 2) | ((uint64_t) (dst->m_is_backbuffer ? 1 : 0) << 3),
+            (uint64_t) g_back_samples, (uint64_t) g_gl_generation, (uint64_t) (uintptr_t) g_back_fbo };
+        GLenum read_status = GL_FRAMEBUFFER_COMPLETE, draw_status = GL_FRAMEBUFFER_COMPLETE;
+        if (!complete_blits.count(blit_key)) {
+            read_status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+            draw_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+            if (read_status == GL_FRAMEBUFFER_COMPLETE && draw_status == GL_FRAMEBUFFER_COMPLETE && complete_blits.size() < 512) complete_blits.insert(blit_key);
+        }
         if (read_status != GL_FRAMEBUFFER_COMPLETE || draw_status != GL_FRAMEBUFFER_COMPLETE) {
             static int logged = 0;
             if (logged++ < 10) printf("[D3D9] StretchRect: framebuffer incomplete (read %X, draw %X)\n", read_status, draw_status);
@@ -3498,6 +3574,7 @@ static void ApplySamplerStates(DWORD Sampler) {
             static int checks = 0;
             if (asked && checks < 12 && (checks == 0 || (g_stats_window_frames % 120) == 0)) {
                 float stored = -1.0f;
+                glcache::sync_unit();
                 glGetTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, &stored);
                 printf("[D3D9] anisotropy check: sampler %u, texture %u, set %.0f, read back %.0f (game's state %u, extension max %.0f, mipmaps %d)\n", (unsigned) Sampler,
                        (unsigned) current_tex, anisotropy, stored, (unsigned) g_sampler_states[Sampler][D3DSAMP_MAXANISOTROPY], g_max_anisotropy, (int) has_mipmaps);
@@ -3652,6 +3729,7 @@ void UploadTextureStages(const D3DMATRIX& view_model) {
     if (g_tc_matrix_uniform != -1) glUniformMatrix4fv(g_tc_matrix_uniform, 8, GL_FALSE, &tc_matrix[0][0]);
     gl_set_matrix_uniform(g_view_model_uniform, &view_model);
     const GLint samplers[8] = { g_texture_uniform, g_texture_lm_uniform, g_texture2_uniform, g_texture3_uniform, g_texture4_uniform, g_texture5_uniform, g_texture6_uniform, g_texture7_uniform };
+    glcache::lazy_units = true;   // (the unit switches of the loop reach GL only for the binds and parameters that are really made)
     for (int s = 0; s < 8; s++) {
         glActiveTexture(GL_TEXTURE0 + s);
         if ((s < 4 && tables[10][s]) || (ps_on && g_texture_stages[s] != 0)) {
@@ -3662,6 +3740,7 @@ void UploadTextureStages(const D3DMATRIX& view_model) {
         }
         if (samplers[s] != -1) glUniform1i(samplers[s], s);
     }
+    glcache::lazy_units = false;
     glActiveTexture(GL_TEXTURE0);
     g_cached_texture = g_texture_stages[0];
     g_last_bound_texture_id = g_texture_stages[0];
