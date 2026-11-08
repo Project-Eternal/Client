@@ -126,9 +126,39 @@ struct FrameStats {
     unsigned lit_draws;              // draws with the lighting on
     unsigned texgen_draws;           // draws where a stage generates its coordinates (camera space normal, position, reflection vector, sphere map)
 };
+#ifdef SRW_DIAGNOSTICS
+// Updates of GL buffers (the Unlock of a Direct3D buffer that really sends bytes) in the window, and how many of them are a hazard: the buffer was read by a draw
+// earlier in the same frame, which makes ANGLE (Chrome) copy or wait (about 0.13 ms each, whatever the size: see SRW-web/bench).
+static unsigned long long g_buffer_frame = 1;
+static std::vector<unsigned long long> g_buffer_drawn_frame;   // by GL buffer name: the frame of the last draw that read it
+static struct BufferUpdateStats {
+    unsigned updates, hazards, bytes, vb_updates, vb_hazards, ib_updates, ib_hazards, size_class[5], max_bytes;
+    unsigned long long buffers_seen_mask;
+} g_buffer_updates;
+static void note_buffer_drawn(GLuint buffer) {
+    if (buffer == 0 || buffer > (1u << 20)) return;
+    if (buffer >= g_buffer_drawn_frame.size()) g_buffer_drawn_frame.resize((size_t) buffer + 256, 0);
+    g_buffer_drawn_frame[buffer] = g_buffer_frame;
+}
+static void note_buffer_update(GLenum target, GLuint buffer, size_t bytes) {
+    const bool hazard = buffer != 0 && buffer < g_buffer_drawn_frame.size() && g_buffer_drawn_frame[buffer] == g_buffer_frame;
+    g_buffer_updates.updates++; g_buffer_updates.bytes += (unsigned) bytes;
+    if (hazard) g_buffer_updates.hazards++;
+    if (target == GL_ARRAY_BUFFER) { g_buffer_updates.vb_updates++; if (hazard) g_buffer_updates.vb_hazards++; }
+    else { g_buffer_updates.ib_updates++; if (hazard) g_buffer_updates.ib_hazards++; }
+    g_buffer_updates.size_class[bytes < 1024 ? 0 : bytes < 4096 ? 1 : bytes < 16384 ? 2 : bytes < 65536 ? 3 : 4]++;
+    if (bytes > g_buffer_updates.max_bytes) g_buffer_updates.max_bytes = (unsigned) bytes;
+}
+#define NOTE_BUFFER_DRAWN(b) note_buffer_drawn(b)
+#else
+#define NOTE_BUFFER_DRAWN(b) do { } while (0)
+#endif
 static FrameStats g_stats, g_stats_last, g_stats_window;
 static unsigned g_stats_window_frames = 0;
 static void stats_end_frame() {
+#ifdef SRW_DIAGNOSTICS
+    g_buffer_frame++;
+#endif
     g_stats_last = g_stats;
     unsigned* w = (unsigned*) &g_stats_window;
     const unsigned* f = (const unsigned*) &g_stats;
@@ -1935,6 +1965,17 @@ static void back_buffer_resolve() {
 // The report of the `gfx` command (and of the log, category perf): what the wrapper does that decides whether alpha to coverage and the
 // anisotropic filter take effect, from the last presented frame. Called from any thread; `window` takes the averages of the frames since the
 // last print of the log instead.
+#ifdef SRW_DIAGNOSTICS
+static void describe_buffer_updates(char* out, size_t size, unsigned frames) {
+    const BufferUpdateStats& b = g_buffer_updates;
+    const double f = frames ? frames : 1;
+    snprintf(out, size, "%.0f per frame, %.0f of them after a draw of this frame read the buffer (%.0f%%); VB %.0f/%.0f, IB %.0f/%.0f; %.1f KB per frame, average %.1f KB, largest %.1f KB; sizes <1K %.0f, <4K %.0f, <16K %.0f, <64K %.0f, more %.0f",
+             b.updates / f, b.hazards / f, b.updates ? 100.0 * b.hazards / b.updates : 0.0, b.vb_updates / f, b.vb_hazards / f, b.ib_updates / f, b.ib_hazards / f,
+             b.bytes / 1024.0 / f, b.updates ? b.bytes / 1024.0 / b.updates : 0.0, b.max_bytes / 1024.0,
+             b.size_class[0] / f, b.size_class[1] / f, b.size_class[2] / f, b.size_class[3] / f, b.size_class[4] / f);
+    memset(&g_buffer_updates, 0, sizeof(g_buffer_updates));
+}
+#endif
 static int describe_graphics(char* out, size_t size, bool window) {
     FrameStats avg = window ? g_stats_window : g_stats_last;
     if (window && g_stats_window_frames > 1) {
@@ -2438,11 +2479,14 @@ HRESULT D3D9Surface::UnlockRect() {
 // D3D9IndexBuffer class
 // Buffers keep a CPU copy of what the GPU holds: Unlock uploads only the bytes that differ (the game locks large dynamic buffers whole
 // every frame and writes a small part of them)
-static void UploadChanged(GLenum target, std::vector<uint8_t>& shadow, UINT length, UINT offset, UINT size, const uint8_t* data) {
+static void UploadChanged(GLenum target, GLuint buffer, std::vector<uint8_t>& shadow, UINT length, UINT offset, UINT size, const uint8_t* data) {
 #ifdef SRW_DIAGNOSTICS
     if (shadow.empty() && length <= 4 * 1024 * 1024) shadow.assign(length, 0);   // so that the geometry of small buffers can be logged
 #endif
     if (size < 512 || offset + size > length) {
+#ifdef SRW_DIAGNOSTICS
+        note_buffer_update(target, buffer, size);
+#endif
         glBufferSubData(target, offset, size, data);
         if (!shadow.empty() && offset + size <= length) memcpy(shadow.data() + offset, data, size);
         return;
@@ -2468,6 +2512,9 @@ static void UploadChanged(GLenum target, std::vector<uint8_t>& shadow, UINT leng
     while (last > first && old[last - 1] == data[last - 1]) last--;
     if (last <= first) return;
     first &= ~3u;
+#ifdef SRW_DIAGNOSTICS
+    note_buffer_update(target, buffer, last - first);
+#endif
     glBufferSubData(target, offset + first, last - first, data + first);
     memcpy(old + first, data + first, last - first);
 }
@@ -2531,7 +2578,7 @@ public:
         
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_buffer);
         // Note: This implementation re-uploads only the locked part to the correct offset.
-        UploadChanged(GL_ELEMENT_ARRAY_BUFFER, m_shadow, m_length, m_locked_offset, m_locked_size, static_cast<const uint8_t*>(m_locked_data));
+        UploadChanged(GL_ELEMENT_ARRAY_BUFFER, m_buffer, m_shadow, m_length, m_locked_offset, m_locked_size, static_cast<const uint8_t*>(m_locked_data));
         // (no unbinding, see above)
         
         delete[] static_cast<uint8_t*>(m_locked_data);
@@ -2602,7 +2649,7 @@ public:
         if (!m_locked_data) return -1;
         
         glBindBuffer(GL_ARRAY_BUFFER, m_buffer);
-        UploadChanged(GL_ARRAY_BUFFER, m_shadow, m_length, m_locked_offset, m_locked_size, static_cast<const uint8_t*>(m_locked_data));
+        UploadChanged(GL_ARRAY_BUFFER, m_buffer, m_shadow, m_length, m_locked_offset, m_locked_size, static_cast<const uint8_t*>(m_locked_data));
         // (no unbinding, see above)
         
         delete[] static_cast<uint8_t*>(m_locked_data);
@@ -3102,7 +3149,7 @@ public:
         if (g_stage0_alphaarg2_uniform != -1)
             glUniform1i(g_stage0_alphaarg2_uniform, g_texture_stage_states[0][D3DTSS_ALPHAARG2]);
 
-        glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer);
+        glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer); NOTE_BUFFER_DRAWN(m_current_vertex_buffer);
 
         // FVF Parsing
         bool has_xyz = (g_current_fvf & D3DFVF_XYZ) != 0;
@@ -3430,6 +3477,9 @@ public:
                         char report[1400];
                         describe_graphics(report, sizeof(report), true);
                         printf("[D3D9] gfx: %s\n", report);
+                        char updates[700];
+                        describe_buffer_updates(updates, sizeof(updates), frames);
+                        printf("[D3D9] buffer updates: %s\n", updates);
                     }
                     memset(&g_stats_window, 0, sizeof(g_stats_window)); g_stats_window_frames = 0;
                     window_start = now; frames = 0; g_perf_draw_ms = g_perf_present_ms = g_perf_readback_ms = g_perf_commit_ms = 0; g_perf_draws = 0; (void) skipped_reports;
@@ -5198,6 +5248,7 @@ void LogDrawState() {
         // Bind buffers
         glBindBuffer(GL_ARRAY_BUFFER, m_current_vertex_buffer);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_current_index_buffer);
+        NOTE_BUFFER_DRAWN(m_current_vertex_buffer); NOTE_BUFFER_DRAWN(m_current_index_buffer);
         
         // Dynamic FVF Parsing
         bool has_xyz = (g_current_fvf & D3DFVF_XYZ) != 0;
